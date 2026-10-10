@@ -3,13 +3,21 @@
 /PROJECT_STATE.md
 
 /.venv/
+/.venv-python3120-backup/
 .env
 .env.*
+!.env.example
 
 
 __pycache__/
 .pytest_cache/
 *.py[cod]
+.pytest_cache/
+.mypy_cache
+.ruff_cache
+.coverage
+.coverage.*
+htmlcov/
 
 
 *.egg-info/
@@ -17,4 +25,12 @@ __pycache__/
 
 build/
 dist/
+
+*.bak
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
 

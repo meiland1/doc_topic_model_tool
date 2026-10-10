@@ -1,3 +1,4 @@
+import traceback
 """Project shell and import/segmentation view."""
 from pathlib import Path
 from dataclasses import replace
@@ -38,6 +39,7 @@ class OllamaModelsWorker(QThread):
         try:
             self.result.emit(list_local_models())
         except Exception as exc:
+            traceback.print_exc()
             self.failed.emit(str(exc))
 
 
@@ -78,11 +80,13 @@ class AnalysisWorker(QThread):
                         self.result.emit(run_id, count)
                         raise
                     except Exception as exc:
+                        traceback.print_exc()
                         self.progress.emit(f"Analysis saved; theme naming failed: {exc}")
                 self.result.emit(run_id, count)
         except AnalysisCancelled:
             self.cancelled.emit()
         except Exception as exc:
+            traceback.print_exc()
             self.failed.emit(str(exc))
 
 
@@ -120,6 +124,7 @@ class SegmentWorker(QThread):
         except SegmentationCancelled:
             pass
         except Exception as exc:
+            traceback.print_exc()
             self.failed.emit(str(exc))
 
 
@@ -225,6 +230,19 @@ class MainWindow(QMainWindow):
         self.document_list.itemSelectionChanged.connect(self.clear_passage_preview)
         self.document_list.itemSelectionChanged.connect(self.update_document_actions)
         left_lay.addWidget(self.document_list)
+        selection_actions = QHBoxLayout()
+        self.select_all_documents_button = QPushButton("Select All")
+        self.select_all_documents_button.setEnabled(False)
+        self.select_all_documents_button.setToolTip("Select every available document for a single combined analysis.")
+        self.select_all_documents_button.clicked.connect(self.document_list.selectAll)
+        selection_actions.addWidget(self.select_all_documents_button)
+        self.clear_document_selection_button = QPushButton("Clear Selection")
+        self.clear_document_selection_button.setEnabled(False)
+        self.clear_document_selection_button.clicked.connect(self.document_list.clearSelection)
+        selection_actions.addWidget(self.clear_document_selection_button)
+        left_lay.addLayout(selection_actions)
+        self.document_selection_count = QLabel("0 of 0 documents selected")
+        left_lay.addWidget(self.document_selection_count)
         self.remove_documents_button = QPushButton("Remove selected documents")
         self.remove_documents_button.setEnabled(False)
         self.remove_documents_button.clicked.connect(self.remove_selected_documents)
@@ -297,6 +315,11 @@ class MainWindow(QMainWindow):
 
     def update_document_actions(self):
         busy = bool(self._analysis_worker or self._worker or self._segment_worker or self._ollama_worker)
+        total = self.document_list.count()
+        selected = len(self.document_list.selectedItems())
+        self.select_all_documents_button.setEnabled(bool(self.project and total) and not busy)
+        self.clear_document_selection_button.setEnabled(bool(self.project and selected) and not busy)
+        self.document_selection_count.setText(f"{selected:,} of {total:,} documents selected")
         self.preview_all_button.setEnabled(bool(self.project and self.document_list.count()) and not busy)
         self.remove_documents_button.setEnabled(bool(self.project and self.document_list.selectedItems()) and not busy)
         removed = bool(self.project and any(status == "removed" for _, _, status in
@@ -323,6 +346,7 @@ class MainWindow(QMainWindow):
         try:
             count = remove_documents(self.project.directory, ids)
         except Exception as exc:
+            traceback.print_exc()
             QMessageBox.warning(self, "Could not remove documents", str(exc))
             return
         self.refresh_documents()
@@ -367,6 +391,7 @@ class MainWindow(QMainWindow):
                 self.update_document_actions()
                 self.import_status.setText(f"Restored {count} document(s) with their saved research decisions.")
             except Exception as exc:
+                traceback.print_exc()
                 QMessageBox.warning(self, "Could not restore documents", str(exc))
         dialog.deleteLater()
 
@@ -708,6 +733,7 @@ class MainWindow(QMainWindow):
             self._analysis_worker = RefinementWorker(self.project.directory, self.workspace.run_id,
                                                      operation, settings, unit, self)
         except Exception as exc:
+            traceback.print_exc()
             QMessageBox.warning(self, "Could not prepare refinement", str(exc))
             return
         worker = self._analysis_worker
@@ -740,6 +766,7 @@ class MainWindow(QMainWindow):
             else:
                 self.task_status("Proposal cancelled. Selected analysis and research decisions are unchanged.")
         except Exception as exc:
+            traceback.print_exc()
             self.task_status("Proposal remains saved for review: " + str(exc))
         self.update_naming_controls()
 
@@ -779,6 +806,7 @@ class MainWindow(QMainWindow):
             try:
                 save_setup(self.project.directory, settings, self.unit_selector.currentText())
             except Exception as exc:
+                traceback.print_exc()
                 QMessageBox.warning(self, "Could not save setup", str(exc))
                 return
             self.analysis_settings = settings
@@ -872,6 +900,7 @@ class MainWindow(QMainWindow):
         try:
             self._show_project(create_project(Path(folder), name))
         except Exception as exc:
+            traceback.print_exc()
             QMessageBox.warning(self, "Could not create project", str(exc))
 
     def open(self):
@@ -883,4 +912,5 @@ class MainWindow(QMainWindow):
             try:
                 self._show_project(open_project(Path(folder)))
             except Exception as exc:
+                traceback.print_exc()
                 QMessageBox.warning(self, "Could not open project", str(exc))

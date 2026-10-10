@@ -6,12 +6,17 @@ The application runs locally. An internet connection is needed to install depend
 
 ## Install
 
-Use **Python 3.12**. Download or clone this repository, then open a terminal in the `doc_topic_model_tool` folder containing `pyproject.toml`.
+Use **Python 3.12.1 or a newer Python 3.12 patch release**. Avoid Python 3.12.0 because of an import compatibility issue encountered during analysis. Download or clone this repository, then open a terminal in the `doc_topic_model_tool` folder containing `pyproject.toml`.
+
+The instructions below assume **pyenv-win** is installed on Windows, or **pyenv** on macOS/Linux. They use 3.12.1 as an example; substitute your chosen newer 3.12 patch version in both pyenv commands. Skip `pyenv install` if that version is already installed. Run these commands with any existing virtual environment deactivated.
 
 ### Windows — PowerShell
 
 ```powershell
-py -3.12 -m venv .venv
+pyenv install 3.12.1
+pyenv local 3.12.1
+python --version
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -e ".[analysis,test]"
@@ -26,16 +31,21 @@ If PowerShell blocks activation, you can install and launch directly through the
 
 ### macOS / Linux
 
-With Python 3.12 available as `python3.12`:
+With pyenv installed:
 
 ```bash
-python3.12 -m venv .venv
+pyenv install 3.12.1
+pyenv local 3.12.1
+python --version
+python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[analysis,test]"
 ```
 
-If you move the repository to another location, recreate `.venv` there and reinstall the application. Keep your project data folders.
+If you do not use pyenv, install Python 3.12.1 or a newer 3.12 patch release and create the environment with that interpreter (`py -3.12 -m venv .venv` on Windows or `python3.12 -m venv .venv` on macOS/Linux). Verify its version before creating the environment.
+
+Changing `pyenv local` does not upgrade an existing `.venv`. If you update Python or move the repository to another location, recreate `.venv` and reinstall the application. Keep your project data folders.
 
 ## Run
 
@@ -49,7 +59,7 @@ doc-topic-model-tool
 2. **Import Documents** to add text-based PDFs, Word `.docx` files, or `.txt` files.
 3. Review the extracted text and preview passages for selected documents or all documents.
 4. Before your first model analysis, use **Download model** while online. This downloads the local sentence-embedding model into the current project's model folder. Each project currently maintains its own model cache.
-5. Select documents and run an analysis. Adjust passage size, discovery style, minimum evidence, ignored words, and optional theme naming in Analysis Setup.
+5. Select documents individually or use **Select All**, then run an analysis. Minimum evidence counts passages across all selected documents. Adjust passage size, discovery style, minimum evidence, ignored words, and optional theme naming in Analysis Setup. For files containing only one or two sentences, **Whole document** keeps each file as one passage.
 6. Inspect and refine the results in **Research Workspace**.
 
 Scanned PDFs need OCR before import. Review extracted text before analyzing: document formatting and reading order may differ from the original file. The default analysis targets English text.
@@ -74,7 +84,7 @@ Ollama must be available locally at `http://127.0.0.1:11434`. Initial model down
 - **Explore documents:** Import multiple sources, inspect extracted text, and choose how text is divided into passages. Remove documents from the active corpus or restore them while retaining historical research.
 - **Discover themes:** Analyze selected documents together using BERTopic. Revisit and rename saved analyses. Passages without a discovered group appear as **Uncategorized**.
 - **Code and annotate:** Create themes, assign highlighted text to one or more themes, accept or reject model suggestions, rename or merge themes, and save notes for passages, documents, or themes. **Manual coding only** is available for researcher-led work.
-- **Inspect evidence:** Select a theme to view its matching passages across documents, highlights, keywords, and keyword weights. Weights displayed as percentages are relevance scores, not confidence probabilities.
+- **Inspect evidence:** Select a theme to view its matching passages across documents, highlights, keywords, and keyword weights. Keyword weights are c-TF-IDF weights displayed as percentages; they are not confidence probabilities and do not necessarily sum to 100%.
 - **Refine an analysis:** Refresh keywords, preview new names, reduce themes, or run fresh discovery. Review proposed changes before applying them.
 - **Visualize results:** Explore a passage-based document map, theme similarity heatmap, theme hierarchy, and text topic tree. Choose PCA or UMAP for the map, adjust UMAP settings, and compare original model groups with current coding. Hierarchy branches are exploratory groupings rather than saved parent themes.
 - **Review and export:** Browse Analysis History and export a codebook as CSV/JSON or coded passages as CSV, including evidence, notes, and provenance.
