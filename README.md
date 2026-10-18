@@ -64,6 +64,20 @@ doc-topic-model-tool
 
 Scanned PDFs need OCR before import. Review extracted text before analyzing: document formatting and reading order may differ from the original file. The default analysis targets English text.
 
+## Choose an analysis method
+
+Analysis Setup offers three methods, all using the local embedding model:
+
+- **General discovery:** Find recurring groups without predefined topics.
+- **Guided discovery:** Provide one seed group per line, such as `Healthcare access | clinic, medication, insurance`. Separate seed words or phrases with commas. Seeds steer clustering; they do not guarantee a topic or its final name. Without automatic naming, themes use keywords; with it, Ollama proposes readable names.
+- **Zero-shot topics + discovery:** Provide one category per line, such as `Healthcare access | Barriers to obtaining medical care and medication`. Text before `|` is the category name; text after it is embedded for matching. Each passage is assigned to its best matching category if its cosine similarity reaches the threshold. This is semantic similarity, not a confidence probability. Review excerpts and calibrate the threshold for your data. Supplied category names are preserved by automatic naming; researchers can rename them manually.
+
+In zero-shot mode, unmatched passages go through ordinary discovery if at least `max(3, minimum evidence)` remain; smaller residual sets stay Uncategorized. Minimum evidence governs discovered clusters, not predefined matches. Categories without matches do not create empty themes. Additional discovered groups use keyword names or optional Ollama naming. Automatic reduction is disabled for zero-shot analyses; explicit researcher merges remain available.
+
+Research Workspace shows the method and selected theme's origin. Hover over the method for saved inputs and matching details. Analysis History records method, seed words/descriptions, and initial matching counts. Origin remains distinct from a researcher's acceptance or rejection of an assignment. Merged groups can retain multiple origins. Renames do not change how a group originated.
+
+Codebook JSON/CSV and coded-passage CSV exports include the method and configuration. Codebook rows and passage assignment details identify topic origins and original supplied category names. Export format version 2 adds these fields while retaining existing evidence, labels, notes, and source offsets. Initial matching counts describe the original model output, not subsequent researcher edits; refinements link back to their initial matching run.
+
 ## Optional local theme naming with Ollama
 
 BERTopic analysis works without Ollama and uses keyword-based theme names. To generate names with a local language model:

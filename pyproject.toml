@@ -21,3 +21,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 markers = ["integration: opt-in real BERTopic smoke with locally cached weights"]
+
+[tool.setuptools.package-data]
+"qualitative_themes.gui" = ["styles/*.qss"]

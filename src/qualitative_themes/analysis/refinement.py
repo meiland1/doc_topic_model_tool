@@ -81,7 +81,10 @@ def load_source(directory, run_id):
                 words[word] = max(score, words.get(word, 0))
         keywords[topic] = sorted(words.items(), key=lambda r: (-r[1], r[0]))[:10]
         representatives[topic] = [p.id for p, t in zip(passages, assignments) if t == topic][:3]
-    return {"settings": settings_from_dict(recorded), "unit": recorded.get("analysis_unit", "Paragraphs"),
+    from qualitative_themes.storage.provenance import theme_provenance_from_connection
+    with connect(directory) as conn:
+        provenance = {topic: theme_provenance_from_connection(conn, theme, run_id) for theme, topic in groups.items()}
+    return {"provenance": provenance, "settings": settings_from_dict(recorded), "unit": recorded.get("analysis_unit", "Paragraphs"),
             "documents": sorted(analysis_document_ids(directory, run_id)), "passages": passages,
             "output": TopicOutput(assignments, keywords, representatives, [r[8] for r in rows]),
             "groups": {topic: theme for theme, topic in groups.items()}, "themes": themes,
@@ -154,6 +157,8 @@ def propose_refinement(directory, source_id, operation, settings=None, unit=None
     source = load_source(directory, source_id)
     settings = settings or source["settings"]
     unit = unit or source["unit"]
+    if operation == "reduce" and source["settings"].analysis_method == "zero_shot":
+        raise ValueError("Automatic reduction is disabled for zero-shot analyses. Merge themes explicitly in Research Workspace instead.")
     if operation != "discover" and unit != source["unit"]:
         raise ValueError("Changing passage size requires fresh discovery.")
     if operation != "discover":
@@ -200,6 +205,24 @@ def propose_refinement(directory, source_id, operation, settings=None, unit=None
                 raise ValueError("Reduction must combine whole saved groups into fewer themes.")
         if any((a == -1) != (b == -1) for a, b in zip(source["output"].assignments, output.assignments)):
             raise ValueError("This refinement changed Uncategorized memberships unexpectedly.")
+    if operation != "discover":
+        from qualitative_themes.storage.provenance import combine_provenance
+        new_origins = {}
+        for previous, current in zip(source["output"].assignments, output.assignments):
+            new_origins.setdefault(str(current), set()).add(previous)
+        output.model_info["topic_provenance"] = {key: combine_provenance([source["provenance"][previous] for previous in entries]) for key, entries in new_origins.items()}
+        # Protect the current researcher-visible label, including deliberate merges/renames.
+        category_labels = {}
+        for previous, current in zip(source["output"].assignments, output.assignments):
+            if source["provenance"][previous]["supplied_names"]:
+                theme = source["groups"][previous]
+                category_labels[str(current)] = source["themes"][theme]["label"]
+        output.model_info["predefined_topic_labels"] = category_labels
+        if source["settings"].analysis_method == "zero_shot":
+            diagnostics = dict(source["model_info"].get("zero_shot", {}))
+            diagnostics.pop("best_similarity_by_segment", None)
+            output.model_info["zero_shot"] = diagnostics
+            output.model_info["initial_matching_run_id"] = source["model_info"].get("initial_matching_run_id", source_id)
     check_cancel(should_cancel)
     output.model_info.update({"parent_run_id": source_id, "refinement_operation": operation,
                               "source_fingerprint": source["fingerprint"],

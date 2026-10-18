@@ -1,6 +1,7 @@
 """Single preset mapping and validation, independent of Qt and model weights."""
 from dataclasses import asdict, dataclass, fields
 import re
+import math
 
 PRESETS = {
     "Balanced": {"min_topic_size": 5, "min_samples": 2, "n_neighbors": 15, "cluster_selection_method": "eom"},
@@ -16,8 +17,31 @@ STYLE_HELP = {
 }
 
 
+ANALYSIS_METHODS = {
+    "general": "General discovery",
+    "guided": "Guided discovery",
+    "zero_shot": "Zero-shot topics + discovery",
+}
+
+
+def parse_topic_definitions(text):
+    """One Name | matching words or description per line; preserve phrases."""
+    definitions = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        name, separator, content = line.partition("|")
+        if not separator:
+            raise ValueError("Use one topic per line: Name | seed words or description.")
+        definitions.append((name.strip(), content.strip()))
+    return tuple(definitions)
+
+
 @dataclass(frozen=True)
 class AnalysisSettings:
+    analysis_method: str = "general"
+    topic_definitions: tuple[tuple[str, str], ...] = ()
+    zeroshot_min_similarity: float = 0.7
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_revision: str = "c9745ed1d9f207416be6d2e6f8de32d1f16199bf"
     seed: int = 42
@@ -53,10 +77,41 @@ def settings_from_dict(values):
     for name in ("ignored_words", "ngram_range"):
         if name in options:
             options[name] = tuple(options[name])
+    if "topic_definitions" in options:
+        options["topic_definitions"] = tuple(tuple(item) for item in options["topic_definitions"])
     return AnalysisSettings(**options)
 
 
+def validate_method_settings(settings):
+    if settings.analysis_method not in ANALYSIS_METHODS:
+        raise ValueError("Choose a supported analysis method.")
+    score = settings.zeroshot_min_similarity
+    if isinstance(score, bool) or not isinstance(score, (float, int)) or not math.isfinite(score) or not 0 <= score <= 1:
+        raise ValueError("Zero-shot similarity must be between 0 and 1.")
+    if len(settings.topic_definitions) > 50:
+        raise ValueError("Use at most 50 predefined topics.")
+    names = set()
+    for item in settings.topic_definitions:
+        if not isinstance(item, (tuple, list)) or len(item) != 2 or any(not isinstance(value, str) for value in item):
+            raise ValueError("Each topic needs a name and matching text.")
+        name, content = item
+        if not name.strip() or len(name) > 80 or any(ord(c) < 32 for c in name):
+            raise ValueError("Topic names must be single lines of 1–80 characters.")
+        if not content.strip() or len(content) > 2000 or any(ord(c) < 32 for c in content):
+            raise ValueError("Each topic needs single-line seed words or a description (up to 2000 characters).")
+        if name.strip().casefold() in names:
+            raise ValueError("Use distinct topic names.")
+        names.add(name.strip().casefold())
+        if settings.analysis_method == "guided" and not any(word.strip() for word in content.split(",")):
+            raise ValueError("Guided topics need comma-separated seed words or phrases.")
+    if settings.analysis_method != "general" and not settings.topic_definitions:
+        raise ValueError("Add at least one topic for this method.")
+    if settings.analysis_method == "zero_shot" and settings.requested_theme_count is not None:
+        raise ValueError("Automatic theme reduction is unavailable for zero-shot categories.")
+
+
 def validate_settings(settings, count):
+    validate_method_settings(settings)
     if any(type(getattr(settings, name)) is not int for name in
            ("min_topic_size", "batch_size", "min_samples", "n_neighbors", "seed")):
         raise ValueError("Analysis counts and seed must be whole numbers.")
@@ -70,7 +125,7 @@ def validate_settings(settings, count):
         raise ValueError("The internal embedding model and revision must be set.")
     if len(settings.ignored_words) > 500 or any(not isinstance(word, str) or not re.fullmatch(r"\w{2,}", word) for word in settings.ignored_words):
         raise ValueError("Ignored words must be single words of at least two characters (up to 500).")
-    minimum = max(3, settings.min_topic_size)
+    minimum = 1 if settings.analysis_method == "zero_shot" else max(3, settings.min_topic_size)
     if count < minimum:
         raise ValueError(f"Only {count} passages are available; these settings need at least {minimum}. "
                          "Lower minimum evidence, choose Short passages or Paragraphs, or add documents. "
@@ -93,6 +148,14 @@ def vectorizer_options(settings, english_words):
 
 
 def effective_parameters(settings, count):
+    if settings.analysis_method == "zero_shot":
+        return {"matching": {"metric": "cosine", "minimum_similarity": settings.zeroshot_min_similarity,
+                             "assignment": "single best matching description"},
+                "residual_discovery": {"minimum_passages": max(3, settings.min_topic_size),
+                                       "parameters": "Computed for the unmatched subset; below minimum remains Uncategorized."},
+                "vectorizer": {"stop_words": "english", "additional_stop_words": list(settings.ignored_words),
+                               "ngram_range": list(settings.ngram_range), "min_df": 1},
+                "reduction": {"aim_for_themes": None, "disabled": True}}
     return {"umap": {"n_neighbors": min(settings.n_neighbors, count-1), "n_components": min(5, count-2),
                      "min_dist": 0.0, "metric": "cosine", "init": "random", "random_state": settings.seed},
             "hdbscan": {"min_cluster_size": settings.min_topic_size, "min_samples": min(settings.min_samples, count-1),

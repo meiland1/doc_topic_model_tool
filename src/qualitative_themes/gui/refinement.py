@@ -98,13 +98,16 @@ class RefinementSetupDialog(QDialog):
     def update_options(self, _value=None):
         operation = self.operation.currentData()
         self.consequences.setText(OPERATIONS[operation][1])
-        self.target.setEnabled(operation == "reduce")
+        blocked = operation == "reduce" and self.source["settings"].analysis_method == "zero_shot"
+        if blocked:
+            self.consequences.setText("Automatic reduction is disabled to protect predefined categories. Use an explicit theme merge in Research Workspace instead.")
+        self.target.setEnabled(operation == "reduce" and not blocked)
         self.ignored.setEnabled(operation in {"words", "reduce"})
         self.phrases.setEnabled(operation in {"words", "reduce"})
         self.auto_names.setEnabled(operation in {"words", "reduce"})
         self.model.setEnabled(operation == "names" or
                               (operation in {"words", "reduce"} and self.auto_names.isChecked()))
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(operation != "reduce" or self.theme_count >= 2)
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not blocked and (operation != "reduce" or self.theme_count >= 2))
 
     def settings(self):
         operation = self.operation.currentData()

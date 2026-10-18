@@ -94,6 +94,8 @@ def label_run(directory, run_id, model_name, progress=None, should_cancel=None, 
         jobs = []
         for topic, theme in sorted(mapping.items(), key=lambda item: int(item[0])):
             protection = _protected(conn, theme, proposal)
+            if str(topic) in info.get("predefined_topic_labels", {}):
+                protection = protection or "protected"
             keywords = info.get("keywords", {}).get(topic, [])
             fallback = ("Uncategorized" if int(topic) == -1 else
                         f"Theme {int(topic)+1}: " + (", ".join(str(word) for word, _ in keywords[:3]) or "Unnamed"))

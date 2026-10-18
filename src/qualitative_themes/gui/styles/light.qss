@@ -1,0 +1,54 @@
+/* Shared light theme. Edit this file to tune the application's appearance.
+   Passage evidence highlight colors are deliberately managed separately. */
+QWidget { color: #203044; }
+QMainWindow, QDialog { background: #f3f6f8; }
+QLabel { background: transparent; }
+QLabel#applicationTitle { font-size: 13pt; font-weight: 600; color: #173448; }
+QLabel#applicationStatus, QLabel#workspaceMethod { color: #526478; }
+QLabel#workspaceHelp { color: #526478; font-size: 9pt; }
+QPushButton, QToolButton {
+    background: #ffffff; border: 1px solid #bccbd5; border-radius: 5px;
+    padding: 6px 10px; min-height: 19px;
+}
+QPushButton:hover, QToolButton:hover { background: #eaf4f3; border-color: #3d8f88; }
+QPushButton:pressed, QToolButton:pressed { background: #d9edeb; }
+QPushButton:checked, QToolButton:checked { background: #e1f1ef; border-color: #0f766e; color: #105e59; }
+QPushButton[primary="true"] { background: #0f766e; border-color: #0f766e; color: #ffffff; font-weight: 600; }
+QPushButton[primary="true"]:hover { background: #115e59; }
+QPushButton:disabled, QToolButton:disabled { background: #edf1f4; color: #758393; border-color: #d6dfe6; }
+QPushButton:focus, QToolButton:focus, QComboBox:focus, QLineEdit:focus,
+QPlainTextEdit:focus, QTreeWidget:focus, QListWidget:focus { border: 2px solid #0f766e; }
+QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox {
+    background: #ffffff; border: 1px solid #bccbd5; border-radius: 4px;
+    padding: 5px 7px; min-height: 19px;
+}
+QComboBox:disabled, QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled { color: #758393; background: #edf1f4; }
+QComboBox QAbstractItemView { background: #ffffff; selection-background-color: #dcefed; selection-color: #173448; }
+QTreeWidget, QListWidget, QPlainTextEdit, QTextEdit {
+    background: #ffffff; border: 1px solid #cbd7df; border-radius: 5px;
+    selection-background-color: #cce8e4; selection-color: #133d38;
+}
+QTreeWidget, QListWidget { padding: 4px; }
+QTreeWidget::item, QListWidget::item { padding: 5px 3px; }
+QTreeWidget::item:hover, QListWidget::item:hover { background: #f0f7f6; }
+QTreeWidget::item:selected, QListWidget::item:selected { background: #dcefed; color: #104e48; }
+QPlainTextEdit, QTextEdit { padding: 8px; }
+QPlainTextEdit#documentViewer { font-size: 11pt; padding: 14px; }
+QTabWidget::pane { border: 1px solid #cbd7df; background: #f9fbfc; border-radius: 4px; }
+QTabBar::tab { background: #edf2f5; color: #526478; padding: 8px 12px; border-bottom: 2px solid transparent; }
+QTabBar::tab:selected { background: #ffffff; color: #0f615b; border-bottom: 2px solid #0f766e; font-weight: 600; }
+QTabBar::tab:hover { background: #e4f0ee; }
+QSplitter::handle { background: #e6edf1; }
+QSplitter::handle:horizontal { width: 6px; }
+QSplitter::handle:vertical { height: 6px; }
+QMenu { background: #ffffff; border: 1px solid #bccbd5; padding: 5px; }
+QMenu::item { padding: 7px 24px 7px 10px; border-radius: 3px; }
+QMenu::item:selected { background: #dcefed; color: #104e48; }
+QMenu::item:disabled { color: #758393; }
+QMenu::separator { height: 1px; background: #dce4ea; margin: 4px 7px; }
+QToolTip { background: #173448; color: #ffffff; border: 1px solid #173448; padding: 5px; }
+QProgressBar { background: #e3eaf0; border: 1px solid #cbd7df; border-radius: 4px; text-align: center; min-height: 16px; }
+QProgressBar::chunk { background: #0f766e; border-radius: 3px; }
+QCheckBox { spacing: 6px; }
+QGroupBox { border: 1px solid #cbd7df; border-radius: 5px; margin-top: 12px; padding-top: 10px; }
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }

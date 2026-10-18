@@ -105,7 +105,7 @@ class AnalysisHistoryDialog(QDialog):
         for record in records:
             if key == "runs":
                 status = {"completed": "Saved analysis", "segmented": "Passage preview", "proposed": "Pending proposal", "cancelled": "Cancelled proposal"}.get(record["status"], record["status"])
-                text = record["title"] + " · " + status
+                text = record["title"] + " · " + record["method"] + " · " + status
             else:
                 text = record["timestamp"][:19].replace("T", " ") + " · " + record["summary"]
             item = QListWidgetItem(text)

@@ -4,6 +4,7 @@ import json
 from uuid import uuid4
 
 from qualitative_themes.storage.database import connect
+from qualitative_themes.storage.provenance import method_summary, method_label
 
 
 def analysis_title(settings_json, completed_at):
@@ -44,7 +45,7 @@ def history_runs(directory, offset=0, limit=50):
     with connect(directory) as conn:
         count = conn.execute("SELECT count(*) FROM analysis_runs").fetchone()[0]
         rows = conn.execute("SELECT id,started_at,completed_at,status,settings_json,model_info_json FROM analysis_runs ORDER BY started_at DESC,rowid DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
-    return [{"id": rid, "started": started, "completed": completed, "status": status,
+    return [{"method": method_label(json.loads(settings)), "id": rid, "started": started, "completed": completed, "status": status,
              "title": analysis_title(settings, completed or started), "settings": json.loads(settings),
              "model_info": json.loads(info)} for rid, started, completed, status, settings, info in rows], count
 
@@ -69,6 +70,7 @@ def analysis_details(directory, run_id):
              f"Started (UTC): {started}", f"Completed (UTC): {completed or 'Not completed'}",
              "Documents: " + (", ".join(documents) or "None recorded"), f"Passages: {segments}",
              f"Passage size: {settings.get('analysis_unit', 'Not recorded')}"]
+    lines.append(method_summary(settings, info))
     if parent:
         lines.append("Refined from: " + analysis_title(parent[0], parent[1] or parent[2]))
     for key, label in [("analysis_style", "Discovery style"), ("min_topic_size", "Minimum evidence"),
@@ -76,7 +78,7 @@ def analysis_details(directory, run_id):
         lines.append(f"{label}: {settings.get(key) if settings.get(key) is not None else 'Automatic / not set'}")
     lines += ["Ignored keyword words: " + (", ".join(settings.get("ignored_words", [])) or "None"),
               "Keyword phrases: " + ("Words only" if settings.get("ngram_range") == [1, 1] else "Words and two-word phrases"),
-              f"Originally discovered themes: {info.get('actual_theme_count', 'Not recorded')}",
+              f"Originally produced themes: {info.get('actual_theme_count', 'Not recorded')}",
               f"Originally Uncategorized passages: {info.get('uncategorized_passage_count', 'Not recorded')}"]
     embedding = info.get("embedding_identity") or info.get("source_model_identity") or {}
     lines.append("Embedding model: " + (embedding.get("model") or settings.get("embedding_model") or "Not recorded"))

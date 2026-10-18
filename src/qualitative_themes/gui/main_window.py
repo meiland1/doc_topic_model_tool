@@ -17,6 +17,7 @@ from qualitative_themes.analysis.segment import UNITS
 from qualitative_themes.storage.segmentation import (SegmentationCancelled,
                                                       create_segmentation_run,
                                                       list_segments)
+from qualitative_themes.gui.task_progress import TaskProgress
 from qualitative_themes.gui.coding_workspace import CodingWorkspace
 from qualitative_themes.analysis.topics import (AnalysisCancelled, analyze,
                                                 download_embedding_model)
@@ -147,15 +148,23 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(6)
         title = QLabel("Topic Model Tool")
-        title.setStyleSheet("font-size: 20px; font-weight: 600")
-        layout.addWidget(title)
+        title.setObjectName("applicationTitle")
+        header_row = QHBoxLayout()
+        header_row.addWidget(title)
         self.status = QLabel("Create or open a project to begin.")
-        layout.addWidget(self.status)
+        self.status.setObjectName("applicationStatus")
+        self.status.setWordWrap(True)
+        self.status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        header_row.addWidget(self.status, 1)
+        layout.addLayout(header_row)
+        self.task_progress = TaskProgress()
+        self.task_progress.cancel_requested.connect(self.cancel_analysis)
+        layout.addWidget(self.task_progress)
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
         documents_tab = QWidget()
         tab_layout = QVBoxLayout(documents_tab)
-        self.tabs.addTab(documents_tab, "Documents & Passages")
+        self.tabs.addTab(documents_tab, "Documents")
         self.workspace = CodingWorkspace()
         self.tabs.addTab(self.workspace, "Research Workspace")
         self.visualizations = VisualizationTab()
@@ -195,6 +204,7 @@ class MainWindow(QMainWindow):
         analysis_actions = QHBoxLayout()
         self.analyze_button = QPushButton("Analyze selected documents")
         self.analyze_button.clicked.connect(self.start_analysis)
+        self.analyze_button.setProperty("primary", True)
         self.analyze_button.setEnabled(False)
         analysis_actions.addWidget(self.analyze_button)
         self.download_button = QPushButton("Download model (one-time setup)")
@@ -650,6 +660,7 @@ class MainWindow(QMainWindow):
         self.update_naming_controls()
         self.visualizations.cancel_button.setEnabled(True)
         self.cancel_analysis_button.setEnabled(True)
+        self.track_task(worker)
         worker.start()
 
     def open_visualization_evidence(self, run_id, theme_id):
@@ -699,6 +710,7 @@ class MainWindow(QMainWindow):
         self.workspace.cancel_task_button.setEnabled(True)
         self.update_naming_controls()
         self.task_status("Preparing a read-only snapshot of effective coding…")
+        self.track_task(worker)
         worker.start()
 
     def start_refinement(self, operation=None):
@@ -748,6 +760,7 @@ class MainWindow(QMainWindow):
         self.workspace.cancel_task_button.setEnabled(True)
         self.update_naming_controls()
         self.task_status("Preparing a separate proposal…")
+        self.track_task(worker)
         worker.start()
 
     def refinement_ready(self, proposal_id, _count=0):
@@ -830,16 +843,31 @@ class MainWindow(QMainWindow):
         self.cancel_analysis_button.setEnabled(True)
         self.workspace.cancel_task_button.setEnabled(True)
         self.task_status("Starting…")
+        self.track_task(worker)
         worker.start()
+
+    def track_task(self, worker):
+        titles = {"VisualizationWorker": "Preparing visualizations", "ResearchExportWorker": "Exporting research",
+                  "RefinementWorker": "Preparing refinement"}
+        title = titles.get(type(worker).__name__, "Analyzing documents")
+        if isinstance(worker, AnalysisWorker):
+            title = "Downloading embedding model" if worker.download else ("Naming themes" if worker.run_id else title)
+        self.task_progress.begin(title)
+        worker.progress.connect(self.task_progress.update_stage)
+        worker.failed.connect(lambda message: self.task_progress.terminal("failed", "Failed · " + message))
+        worker.cancelled.connect(lambda: self.task_progress.terminal("cancelled", "Cancelled · Any completed analysis and researcher work remain saved."))
 
     def cancel_analysis(self):
         if self._analysis_worker:
             self._analysis_worker.requestInterruption()
+            self.task_progress.request_cancel()
+            self.visualizations.cancel_button.setEnabled(False)
             self.cancel_analysis_button.setEnabled(False)
             self.workspace.cancel_task_button.setEnabled(False)
             self.task_status("Cancellation requested; waiting for the current computation or request…")
 
     def task_status(self, message):
+        self.task_progress.update_stage(message)
         self.import_status.setText(message)
         self.workspace.status.setText(message)
 
@@ -854,6 +882,7 @@ class MainWindow(QMainWindow):
             self.workspace.status.setText("Theme naming finished. Open Theme naming details for results and fallback reasons.")
 
     def analysis_finished(self):
+        self.task_progress.finish()
         worker = self._analysis_worker
         if worker:
             worker.wait()

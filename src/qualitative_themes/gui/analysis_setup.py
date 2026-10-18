@@ -2,12 +2,12 @@
 from dataclasses import replace
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QFormLayout, QLabel, QListWidget, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget)
+    QDoubleSpinBox, QFormLayout, QLabel, QListWidget, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 
 from qualitative_themes.analysis.labels import list_local_models
 from qualitative_themes.analysis.segment import UNITS
 from qualitative_themes.analysis.settings import (PRESETS, STYLE_HELP, AnalysisSettings,
-    parse_ignored_words, preset_settings, validate_settings, small_corpus_warning)
+    ANALYSIS_METHODS, parse_topic_definitions, parse_ignored_words, preset_settings, validate_settings, small_corpus_warning)
 from qualitative_themes.analysis.topics import prepare_passages
 
 
@@ -74,6 +74,25 @@ class AnalysisSetupDialog(QDialog):
         selected.setMaximumHeight(95)
         layout.addWidget(selected)
         form = QFormLayout()
+        self.method = QComboBox()
+        for key, label in ANALYSIS_METHODS.items():
+            self.method.addItem(label, key)
+        self.method.setCurrentIndex(max(0, self.method.findData(self.initial.analysis_method)))
+        form.addRow("Analysis method", self.method)
+        self.method_help = QLabel()
+        self.method_help.setWordWrap(True)
+        form.addRow(self.method_help)
+        self.topic_editor = QPlainTextEdit()
+        self.topic_editor.setMaximumHeight(130)
+        self.topic_editor.setPlainText("\n".join(f"{name} | {text}" for name, text in self.initial.topic_definitions))
+        form.addRow("Predefined topics", self.topic_editor)
+        self.similarity = QDoubleSpinBox()
+        self.similarity.setRange(0, 1)
+        self.similarity.setDecimals(2)
+        self.similarity.setSingleStep(0.05)
+        self.similarity.setValue(self.initial.zeroshot_min_similarity)
+        self.similarity.setToolTip("Semantic similarity, not confidence. Calibrate using reviewed passages.")
+        form.addRow("Minimum similarity", self.similarity)
         self.style = QComboBox()
         self.style.addItems(PRESETS)
         self.style.setCurrentText(self.initial.analysis_style)
@@ -155,6 +174,9 @@ class AnalysisSetupDialog(QDialog):
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         outer.addWidget(self.buttons)
+        self.method.currentIndexChanged.connect(self.update_validation)
+        self.topic_editor.textChanged.connect(self.update_validation)
+        self.similarity.valueChanged.connect(self.update_validation)
         self.style.currentTextChanged.connect(self.style_changed)
         self.unit.currentTextChanged.connect(self.inspect)
         for signal in [self.number_mode.currentIndexChanged, self.number.valueChanged,
@@ -167,7 +189,9 @@ class AnalysisSetupDialog(QDialog):
     def settings(self):
         # Preserve the configured internal embedding identity and execution seed.
         base = preset_settings(self.style.currentText())
-        return replace(base, embedding_model=self.initial.embedding_model,
+        return replace(base, analysis_method=self.method.currentData(),
+            topic_definitions=parse_topic_definitions(self.topic_editor.toPlainText()) if self.method.currentData() != "general" else (),
+            zeroshot_min_similarity=self.similarity.value(), embedding_model=self.initial.embedding_model,
             embedding_revision=self.initial.embedding_revision, seed=self.initial.seed,
             batch_size=self.initial.batch_size, min_topic_size=self.minimum.value(),
             ignored_words=parse_ignored_words(self.ignored.toPlainText()),
@@ -181,6 +205,9 @@ class AnalysisSetupDialog(QDialog):
 
     def restore_defaults(self):
         self.initial = AnalysisSettings()
+        self.method.setCurrentIndex(0)
+        self.topic_editor.clear()
+        self.similarity.setValue(0.7)
         self.style.setCurrentText("Balanced")
         self.minimum.setValue(5)
         self.unit.setCurrentText("Standard passages")
@@ -228,6 +255,19 @@ class AnalysisSetupDialog(QDialog):
             self.update_validation()
 
     def update_validation(self, *_args):
+        method = self.method.currentData()
+        self.topic_editor.setEnabled(method != "general")
+        self.similarity.setEnabled(method == "zero_shot")
+        self.number_mode.setEnabled(method != "zero_shot")
+        if method == "zero_shot":
+            self.number_mode.setCurrentIndex(0)
+        help_text = {
+            "general": "Discover recurring themes without predefined topics.",
+            "guided": "Steer discovery with comma-separated seed words or phrases. One line: Healthcare access | clinic, medication, insurance",
+            "zero_shot": "Assign each passage to its best matching topic above the similarity threshold, then discover other groups. Supplied names are preserved. One line: Healthcare access | Barriers to obtaining treatment and medication",
+        }
+        self.method_help.setText(help_text[method])
+        self.topic_editor.setPlaceholderText("Topic name | seed words or descriptive matching text (one topic per line)")
         self.style_help.setText(STYLE_HELP[self.style.currentText()])
         self.unit_help.setText(UNIT_HELP[self.unit.currentText()])
         self.number.setEnabled(bool(self.number_mode.currentIndex()))

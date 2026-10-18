@@ -97,6 +97,9 @@ def save_result(directory, unit, document_ids, passages, settings, output, shoul
                 "parameters": effective_parameters(settings, len(passages))}
     info = {**output.model_info, "topic_theme_map": mapping, "keywords": output.keywords,
             "representative_segment_ids": output.representatives, "provenance": "BERTopic suggestion", "model_text_filter": MODEL_TEXT_VERSION}
+    from qualitative_themes.storage.provenance import topic_provenance
+    info["analysis_method"] = settings.analysis_method
+    info["topic_provenance"] = {str(topic): topic_provenance(recorded, info, topic) for topic in topics}
     info["actual_theme_count"] = len([topic for topic in topics if topic != -1])
     info["uncategorized_passage_count"] = output.assignments.count(-1)
     encoded_settings = json.dumps(recorded, allow_nan=False)
@@ -115,6 +118,7 @@ def save_result(directory, unit, document_ids, passages, settings, output, shoul
         for topic, theme_id in mapping.items():
             words = [word for word, _ in output.keywords.get(topic, [])[:3]]
             label = "Uncategorized" if topic == -1 else f"Theme {topic + 1}: " + (", ".join(words) or "Unnamed")
+            label = output.model_info.get("predefined_topic_labels", {}).get(str(topic), label)
             conn.execute("INSERT INTO themes(id, generated_label, creation_source, status) VALUES (?, ?, 'model', ?)", (theme_id, label, "proposed" if status == "proposed" else "active"))
         for i, (passage, topic) in enumerate(zip(passages, output.assignments)):
             score = output.scores[i] if output.scores else None
@@ -152,6 +156,7 @@ def apply_topic_goal(model, texts, target, progress):
 
 
 def fit_bertopic(passages, settings, directory, progress, should_cancel):
+    validate_settings(settings, len(passages))
     try:
         import numpy as np
         from bertopic import BERTopic
@@ -161,7 +166,6 @@ def fit_bertopic(passages, settings, directory, progress, should_cancel):
         from sklearn.feature_extraction.text import CountVectorizer, ENGLISH_STOP_WORDS
     except ImportError as exc:
         raise ValueError('Install analysis dependencies in your environment: pip install -e ".[analysis,test]"') from exc
-    params = effective_parameters(settings, len(passages))
     vectorizer = CountVectorizer(**vectorizer_options(settings, ENGLISH_STOP_WORDS))
     if not any(vectorizer.build_analyzer()(p.text) for p in passages):
         raise ValueError("No usable keywords remain. Remove some ignored words or choose text with more vocabulary.")
@@ -204,35 +208,62 @@ def fit_bertopic(passages, settings, directory, progress, should_cancel):
                 np.save(stream, vector, allow_pickle=False)
             temp.replace(path)
     embeddings = np.stack([vectors[p.text] for p in passages])
+    from qualitative_themes.analysis.methods import guided_seed_topics, zero_shot_partition, restore_partition_keywords
+
+    def discover(selected, selected_embeddings, selected_settings):
+        check_cancel(should_cancel)
+        progress("Finding corpus-wide themes… Cancellation takes effect after clustering finishes.")
+        selected_params = effective_parameters(selected_settings, len(selected))
+        options = {}
+        if selected_settings.analysis_method == "guided":
+            options["seed_topic_list"] = guided_seed_topics(selected_settings)
+            progress("Guiding discovery with researcher-supplied seed topics…")
+        model = BERTopic(embedding_model=encoder, top_n_words=10, calculate_probabilities=False,
+            umap_model=UMAP(**selected_params["umap"]), hdbscan_model=HDBSCAN(**selected_params["hdbscan"]),
+            vectorizer_model=CountVectorizer(**vectorizer_options(selected_settings, ENGLISH_STOP_WORDS)), **options)
+        try:
+            model.fit_transform([p.text for p in selected], embeddings=selected_embeddings.copy())
+        except ValueError as exc:
+            raise ValueError("The corpus could not form themes. Try more varied text, more documents, or Short passages. " + str(exc)) from exc
+        check_cancel(should_cancel)
+        count = apply_topic_goal(model, [p.text for p in selected], selected_settings.requested_theme_count, progress)
+        topics = [int(t) for t in model.topics_]
+        words = {topic: [(str(word), float(score)) for word, score in (model.get_topic(topic) or [])] for topic in set(topics)}
+        reps = {}
+        for topic in set(topics):
+            examples = set(model.get_representative_docs(topic) or [])
+            reps[topic] = [p.id for p, t in zip(selected, topics) if t == topic and p.text in examples][:3]
+        scores = model.probabilities_
+        return TopicOutput(topics, words, reps, [float(s) for s in scores] if scores is not None else [],
+                           {"discovery_theme_count": count})
+
     check_cancel(should_cancel)
-    progress("Finding corpus-wide themes… Cancellation takes effect after clustering finishes.")
-    model = BERTopic(embedding_model=encoder, top_n_words=10, calculate_probabilities=False,
-        umap_model=UMAP(**params["umap"]), hdbscan_model=HDBSCAN(**params["hdbscan"]),
-        vectorizer_model=vectorizer)
-    try:
-        topics, scores = model.fit_transform([p.text for p in passages], embeddings=embeddings)
-    except ValueError as exc:
-        raise ValueError("The corpus could not form themes. Try more varied text, more documents, or Short passages. " + str(exc)) from exc
+    if settings.analysis_method == "zero_shot":
+        progress("Matching passages to predefined topic descriptions…")
+        categories = encoder.encode([text for _, text in settings.topic_definitions],
+            batch_size=settings.batch_size, normalize_embeddings=True, convert_to_numpy=True, show_progress_bar=False)
+        check_cancel(should_cancel)
+        topics, method_info = zero_shot_partition(passages, embeddings, categories, settings, discover,
+                                                 lambda: check_cancel(should_cancel))
+        if method_info["zero_shot"]["residual_discovery_skipped"]:
+            progress("Too few unmatched passages for discovery; keeping those passages Uncategorized.")
+        # Reuse the existing BERTopic fixed-partition path for c-TF-IDF keywords.
+        from qualitative_themes.analysis.refinement import fixed_partition_backend
+        represented = fixed_partition_backend(passages, topics, settings, "words", progress, should_cancel)
+        keywords, representatives = restore_partition_keywords(passages, topics, represented)
+        output = TopicOutput(topics, keywords, representatives, model_info=method_info)
+    else:
+        output = discover(passages, embeddings, settings)
     check_cancel(should_cancel)
-    target = settings.requested_theme_count
-    discovery_count = apply_topic_goal(model, [p.text for p in passages], target, progress)
-    topics, scores = model.topics_, model.probabilities_
-    check_cancel(should_cancel)
-    keywords = {int(topic): [(str(word), float(score)) for word, score in (model.get_topic(topic) or [])]
-                for topic in set(topics)}
-    representatives = {}
-    for topic in set(topics):
-        representative_texts = set(model.get_representative_docs(topic) or [])
-        representatives[int(topic)] = [p.id for p, t in zip(passages, topics)
-                                       if t == topic and p.text in representative_texts][:3]
     packages = {}
     for package in ["bertopic", "sentence-transformers", "umap-learn", "hdbscan", "scikit-learn", "numpy", "torch"]:
         try:
             packages[package] = version(package)
         except PackageNotFoundError:
             packages[package] = "unknown"
-    return TopicOutput([int(t) for t in topics], keywords, representatives,
-                       [float(s) for s in scores] if scores is not None else [],
-                       {"packages": packages, "embedding_identity": identity, "device": "cpu",
-                        "discovery_theme_count": discovery_count,
-                        "reduction_note": ("Requested count is a reduction goal; creating more themes requires a new discovery run." if target else "Model decided the theme count.")})
+    output.model_info.update({"packages": packages, "embedding_identity": identity, "device": "cpu",
+        "analysis_method": settings.analysis_method,
+        "reduction_note": ("Automatic reduction disabled for predefined categories." if settings.analysis_method == "zero_shot" else
+                           "Requested count is a reduction goal; creating more themes requires a new discovery run." if settings.requested_theme_count else
+                           "Model decided the theme count.")})
+    return output

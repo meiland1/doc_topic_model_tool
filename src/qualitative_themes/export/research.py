@@ -11,6 +11,7 @@ from qualitative_themes.storage.coding import (
 )
 from qualitative_themes.storage.database import connect, DB_NAME
 from qualitative_themes.storage.history import analysis_title
+from qualitative_themes.storage.provenance import theme_provenance_from_connection, method_label, origin_text
 from qualitative_themes.storage.theme_keywords import theme_keywords_from_connection
 
 RANGE_COUNTS = ("One row per unique (document, start, end) range. All active themes on that exact range "
@@ -90,8 +91,10 @@ def build_export(directory, run_id=None, progress=None, should_cancel=None):
             selected = sorted(keys, key=lambda key: (key not in rep_keys, doc_order.get(key[0], len(doc_order)), key[1], key[2]))[:3]
             covered = sorted({doc for doc, _, _ in keys}, key=lambda doc: doc_order[doc])
             words = theme_keywords_from_connection(conn, tid, run_id)
-            entry = {"theme_id": tid, "theme": label, "description": description or "",
-                     "label_source": "researcher" if user_label is not None or creation == "researcher" else "generated",
+            provenance = theme_provenance_from_connection(conn, tid, run_id)
+            entry = {"topic_origin": origin_text(provenance), "topic_origins": provenance["origins"],
+                     "supplied_category_names": provenance["supplied_names"], "theme_id": tid, "theme": label, "description": description or "",
+                     "label_source": "researcher" if user_label is not None or creation == "researcher" else "predefined" if label in provenance["supplied_names"] else "generated",
                      "keywords": words, "unique_coded_ranges": len(set(keys)),
                      "documents_covered": len(covered), "documents": [documents[doc]["name"] for doc in covered],
                      "representative_evidence": [evidence(*key) for key in selected],
@@ -102,7 +105,8 @@ def build_export(directory, run_id=None, progress=None, should_cancel=None):
             for aid, doc, start, end, origin in assignments:
                 key = doc, start, end
                 group = range_groups.setdefault(key, [])
-                group.append({"theme_id": tid, "theme": label, "source": origin,
+                group.append({"topic_origin": origin_text(provenance), "topic_origins": provenance["origins"],
+                              "supplied_category_names": provenance["supplied_names"], "theme_id": tid, "theme": label, "source": origin,
                               "assignment_id": aid, "notes": coding_notes.get((tid, doc, start, end), [])})
         passages = []
         for key in sorted(range_groups, key=lambda key: (doc_order[key[0]], key[1], key[2])):
@@ -118,10 +122,12 @@ def build_export(directory, run_id=None, progress=None, should_cancel=None):
         if run_id:
             for tid, topic in conn.execute("SELECT theme_id,bertopic_id FROM model_suggestions WHERE run_id=?", (run_id,)):
                 topic_ids.setdefault(tid, set()).add(topic)
-        metadata = {"outlier_theme_ids": [tid for tid, topics in topic_ids.items() if topics == {-1}], "format_version": 1, "exported_utc": datetime.now(timezone.utc).isoformat(),
+        metadata = {"outlier_theme_ids": [tid for tid, topics in topic_ids.items() if topics == {-1}], "format_version": 2, "exported_utc": datetime.now(timezone.utc).isoformat(),
                     "project": project[1], "project_id": project[0], "analysis": title,
                     "analysis_id": run_id, "completed_utc": completed,
                     "analysis_unit": settings.get("analysis_unit", "Manual ranges"),
+                    "analysis_method": settings.get("analysis_method", "general") if run_id else "manual",
+                    "analysis_method_label": method_label(settings, manual=not run_id),
                     "settings": settings, "model_info": info,
                     "embedding_model": embedding.get("model") or settings.get("embedding_model", ""),
                     "embedding_revision": embedding.get("revision") or settings.get("embedding_revision", ""),
@@ -162,7 +168,11 @@ def _write_atomic(destination, write, encoding, should_cancel=None):
 
 
 def _context(metadata):
-    return {"analysis": metadata["analysis"], "analysis_id": metadata["analysis_id"] or "",
+    return {"analysis_method": metadata["analysis_method"], "analysis_method_label": metadata["analysis_method_label"],
+            "analysis_configuration": json.dumps({"analysis_method": metadata["analysis_method"],
+                "topic_definitions": metadata["settings"].get("topic_definitions", []),
+                "zeroshot_min_similarity": metadata["settings"].get("zeroshot_min_similarity", 0.7) if metadata["analysis_method"] == "zero_shot" else None}, ensure_ascii=False),
+            "analysis": metadata["analysis"], "analysis_id": metadata["analysis_id"] or "",
             "analysis_unit": metadata["analysis_unit"], "project": metadata["project"],
             "exported_utc": metadata["exported_utc"], "embedding_model": metadata["embedding_model"],
             "embedding_revision": metadata["embedding_revision"], "naming_model": metadata["naming_model"] or "Keyword fallback",
@@ -177,7 +187,7 @@ def write_codebook(directory, run_id, destination, progress=None, should_cancel=
         _write_atomic(destination, lambda stream: json.dump({"metadata": data["metadata"], "themes": data["themes"]}, stream, ensure_ascii=False, indent=2), "utf-8", should_cancel)
     elif destination.suffix.lower() == ".csv":
         context = _context(data["metadata"])
-        fields = ["theme", "description", "keywords", "unique_coded_ranges", "documents_covered", "documents", "label_source",
+        fields = ["topic_origin", "topic_origins", "supplied_category_names", "theme", "description", "keywords", "unique_coded_ranges", "documents_covered", "documents", "label_source",
                   "representative_evidence", "theme_notes", "passage_notes", "document_notes", "theme_id", *context, "count_definition"]
         def write(stream):
             writer = csv.DictWriter(stream, fieldnames=fields)
@@ -185,7 +195,7 @@ def write_codebook(directory, run_id, destination, progress=None, should_cancel=
             for entry in data["themes"]:
                 _check_cancel(should_cancel)
                 row = dict(entry)
-                for key in ["keywords", "documents", "representative_evidence", "theme_notes", "passage_notes", "document_notes"]:
+                for key in ["topic_origins", "supplied_category_names", "keywords", "documents", "representative_evidence", "theme_notes", "passage_notes", "document_notes"]:
                     row[key] = json.dumps(row[key], ensure_ascii=False)
                 writer.writerow({**row, **context, "count_definition": THEME_COUNTS})
         _write_atomic(destination, write, "utf-8-sig", should_cancel)
