@@ -6,46 +6,73 @@ The application runs locally. An internet connection is needed to install depend
 
 ## Install
 
-Use **Python 3.12.1 or a newer Python 3.12 patch release**. Avoid Python 3.12.0 because of an import compatibility issue encountered during analysis. Download or clone this repository, then open a terminal in the `doc_topic_model_tool` folder containing `pyproject.toml`.
+Use **Python 3.12.1**, the version used for development.
 
-The instructions below assume **pyenv-win** is installed on Windows, or **pyenv** on macOS/Linux. They use 3.12.1 as an example; substitute your chosen newer 3.12 patch version in both pyenv commands. Skip `pyenv install` if that version is already installed. Run these commands with any existing virtual environment deactivated.
+1. Install Python 3.12.1 from:
+   https://www.python.org/downloads/release/python-3121/
+   - **Windows:** Choose the Windows installer (64-bit).
+   - **Mac:** Choose the macOS 64-bit universal2 installer.
+2. Download this repository using **Code → Download ZIP** on GitHub, then extract it, or clone the repository.
+3. Open PowerShell on Windows or Terminal on Mac, and navigate to the extracted folder containing `pyproject.toml`.
 
 ### Windows — PowerShell
 
+Check the installed Python version:
+
 ```powershell
-pyenv install 3.12.1
-pyenv local 3.12.1
-python --version
-python -m venv .venv
+py -3.12 --version
+```
+
+For these instructions, it should report `Python 3.12.1`. Then run:
+
+```powershell
+py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -e ".[analysis,test]"
+python -m pip check
 ```
 
-If PowerShell blocks activation, you can install and launch directly through the environment:
+If PowerShell blocks activation, use these commands instead:
 
 ```powershell
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -e ".[analysis,test]"
-.\.venv\Scripts\doc-topic-model-tool.exe
+.\.venv\Scripts\python.exe -m pip check
 ```
 
-### macOS / Linux
+### macOS — Terminal
 
-With pyenv installed:
+Check the installed Python version:
+
+```bash
+python3.12 --version
+```
+
+For these instructions, it should report `Python 3.12.1`. Then run:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[analysis,test]"
+python -m pip check
+```
+
+Installation downloads the application dependencies and may take several minutes.
+
+### If you already use pyenv
+
+You can select Python 3.12.1 with:
 
 ```bash
 pyenv install 3.12.1
 pyenv local 3.12.1
-python --version
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e ".[analysis,test]"
 ```
 
-If you do not use pyenv, install Python 3.12.1 or a newer 3.12 patch release and create the environment with that interpreter (`py -3.12 -m venv .venv` on Windows or `python3.12 -m venv .venv` on macOS/Linux). Verify its version before creating the environment.
+Skip the installation command if that version is already installed. Then use `python -m venv .venv` and follow the activation and installation commands for your operating system above.
 
-Changing `pyenv local` does not upgrade an existing `.venv`. If you update Python or move the repository to another location, recreate `.venv` and reinstall the application. Keep your project data folders.
+If you move the repository, recreate `.venv` in the new location and reinstall the application. Keep your research project folders.
 
 ## Run
 
