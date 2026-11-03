@@ -162,6 +162,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.task_progress)
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
+
+        # Tool Navigation tabs
         documents_tab = QWidget()
         tab_layout = QVBoxLayout(documents_tab)
         self.tabs.addTab(documents_tab, "Documents")
@@ -174,6 +176,8 @@ class MainWindow(QMainWindow):
         self.visualizations.evidence_requested.connect(self.open_visualization_evidence)
         self.tabs.currentChanged.connect(self.refresh_visualization_runs)
         actions = QHBoxLayout()
+
+        # Buttons for creating/opening projects and importing documents
         create = QPushButton("Create Project")
         create.clicked.connect(self.create)
         open_button = QPushButton("Open Project")
@@ -184,6 +188,8 @@ class MainWindow(QMainWindow):
         self.import_button.setEnabled(False)
         self.import_button.clicked.connect(self.import_files)
         actions.addWidget(self.import_button)
+
+        # Buttons sections for previewing different chunking methods
         self.unit_selector = QComboBox()
         self.unit_selector.addItems(UNITS)
         self.unit_selector.setCurrentText("Standard passages")
@@ -201,16 +207,22 @@ class MainWindow(QMainWindow):
         actions.addWidget(self.preview_all_button)
         actions.addStretch()
         tab_layout.addLayout(actions)
+
+        # Buttons for running an analysis
         analysis_actions = QHBoxLayout()
         self.analyze_button = QPushButton("Analyze selected documents")
         self.analyze_button.clicked.connect(self.start_analysis)
         self.analyze_button.setProperty("primary", True)
         self.analyze_button.setEnabled(False)
         analysis_actions.addWidget(self.analyze_button)
+
+        # Temporary thing to download sentence embedding model 
         self.download_button = QPushButton("Download model (one-time setup)")
         self.download_button.clicked.connect(lambda: self.start_analysis(download=True))
         self.download_button.setEnabled(False)
         analysis_actions.addWidget(self.download_button)
+
+        # Cancel an analysis
         self.cancel_analysis_button = QPushButton("Cancel")
         self.cancel_analysis_button.clicked.connect(self.cancel_analysis)
         self.cancel_analysis_button.setEnabled(False)
@@ -230,6 +242,8 @@ class MainWindow(QMainWindow):
         self.workspace.export_codebook_button.clicked.connect(lambda: self.start_research_export("codebook"))
         self.workspace.export_passages_button.clicked.connect(lambda: self.start_research_export("passages"))
         self.contents = QSplitter()
+
+        # Project Document file viewer/selector
         left = QWidget()
         left_lay = QVBoxLayout(left)
         left_lay.addWidget(QLabel("Documents"))
@@ -266,6 +280,8 @@ class MainWindow(QMainWindow):
         right_lay = QVBoxLayout(right)
         self.preview_title = QLabel("Import documents to preview extracted text.")
         right_lay.addWidget(self.preview_title)
+
+        # Chunking passage preview sections
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
         right_lay.addWidget(self.preview)
@@ -289,6 +305,8 @@ class MainWindow(QMainWindow):
         self.import_log.setAccessibleName("Document import results")
         tab_layout.addWidget(self.import_log)
 
+
+    # Functions
     def _show_project(self, project: Project):
         self.project = project
         self.analysis_settings, unit = load_setup(project.directory)

@@ -56,6 +56,8 @@ class CodingWorkspace(QWidget):
         self._navigation_groups = {}
         self._tree_nodes = {}
         outer = QVBoxLayout(self)
+
+        # Header area for Research Workspace
         header = QLabel("Research Workspace")
         header.setObjectName("workspaceTitle")
         outer.addWidget(header)
@@ -133,6 +135,7 @@ class CodingWorkspace(QWidget):
         self._browser_sizes = None
         splitter.setChildrenCollapsible(False)
 
+        # Topic Window organized by Documents or by Themes
         left = QWidget()
         self.evidence_browser = left
         left_lay = QVBoxLayout(left)
@@ -187,6 +190,7 @@ class CodingWorkspace(QWidget):
         left_lay.addWidget(merge)
         splitter.addWidget(left)
 
+        # Document viewer header navigates passages within documents
         center = QWidget()
         center_lay = QVBoxLayout(center)
         self.document_choice = QComboBox()
@@ -257,6 +261,8 @@ class CodingWorkspace(QWidget):
         remove.clicked.connect(self.remove_selected_coding)
         coding_actions.addWidget(remove)
         center_lay.addLayout(coding_actions)
+
+        # open notes panel and add/review notes to passages/themes/documents
         self.notes_drawer = right
         self.notes_toggle.toggled.connect(right.setVisible)
         self.notes_toggle.setToolTip("Show notes for the current passage, theme, or document. Save drafts before closing the application.")
@@ -309,6 +315,8 @@ class CodingWorkspace(QWidget):
         self.compact_header(outer, [run_actions, research_actions, naming_actions, refinement_actions],
                             [header, self.help, self.export_help, self.model_toggle, self.naming_toggle])
 
+
+    # Functions
     def compact_header(self, outer, old_rows, hidden_widgets):
         # Preserve the existing action buttons/signals so worker busy-state logic
         # and all operations remain shared with the original controls.
