@@ -89,6 +89,14 @@ doc-topic-model-tool
 5. Select documents individually or use **Select All**, then run an analysis. Minimum evidence counts passages across all selected documents. Adjust passage size, discovery style, minimum evidence, ignored words, and optional theme naming in Analysis Setup. For files containing only one or two sentences, **Whole document** keeps each file as one passage.
 6. Inspect and refine the results in **Research Workspace**.
 
+## In-App Help & Guidance
+
+If you are new to qualitative topic modeling or unfamiliar with the interface controls:
+- Click the **📖 How-To Guide** button on the main dashboard to open a built-in interactive walkthrough.
+- Follow the guided steps covering project setup, document chunking, running BERTopic analysis, and navigating the Research Workspace.
+## You need the following command to ensure the how to button works:
+- python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org PyQt6
+
 Scanned PDFs need OCR before import. Review extracted text before analyzing: document formatting and reading order may differ from the original file. The default analysis targets English text.
 
 ## Choose an analysis method

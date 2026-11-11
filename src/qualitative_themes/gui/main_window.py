@@ -31,6 +31,9 @@ from qualitative_themes.gui.refinement import RefinementSetupDialog, RefinementR
 import json
 from qualitative_themes.storage.preferences import load_setup, save_setup, result_summary
 
+from PyQt6.QtWidgets import QMessageBox, QTextBrowser, QDialog
+from PySide6.QtWidgets import QMessageBox, QTextBrowser, QDialog, QVBoxLayout, QPushButton
+
 
 class OllamaModelsWorker(QThread):
     result = Signal(object)
@@ -176,6 +179,12 @@ class MainWindow(QMainWindow):
         self.visualizations.evidence_requested.connect(self.open_visualization_evidence)
         self.tabs.currentChanged.connect(self.refresh_visualization_runs)
         actions = QHBoxLayout()
+       
+        # ---> ADD THIS: How-To Guide Button <---
+        self.help_button = QPushButton("📖 How-To Guide")
+        self.help_button.setToolTip("Open a quick beginner walkthrough of how to use the tool.")
+        self.help_button.clicked.connect(self.show_how_to_dialog)
+        actions.addWidget(self.help_button)
 
         # Buttons for creating/opening projects and importing documents
         create = QPushButton("Create Project")
@@ -326,6 +335,49 @@ class MainWindow(QMainWindow):
         self.workspace.set_project(project.directory)
         self.visualizations.set_project(project.directory)
         self.update_naming_controls()
+
+
+
+    def show_how_to_dialog(self):
+        """Displays a beginner-friendly How-To guide dialog."""
+        dialog = QDialog()
+        dialog.setWindowTitle("Document Topic Modeling Tool — Beginner Guide")
+        dialog.resize(650, 500)
+        
+        # Correct PySide6 layout attachment
+        layout = QVBoxLayout()
+        dialog.setLayout(layout)
+        
+        browser = QTextBrowser()
+        browser.setHtml("""
+            <h2>Welcome to the Document Topic Modeling Tool!</h2>
+            <p>If you're new here, follow these simple steps to explore themes in your documents:</p>
+            <ol>
+                <b><li>Create or Open a Project:</li></b>
+                <p>Click <b>Create Project</b> to start a new workspace folder, or <b>Open Project</b> to load existing work.</p>
+                
+                <b><li>Import Documents:</li></b>
+                <p>Click <b>Import Documents</b> to add text-based PDFs, Word (.docx) files, or text files (.txt).</p>
+                
+                <b><li>Download the Model (First Time Only):</li></b>
+                <p>While connected to the internet, click <b>Download model (one-time setup)</b> to fetch the required local sentence-embedding model.</p>
+                
+                <b><li>Preview Passages & Run Analysis:</li></b>
+                <p>Select your documents from the list on the left, choose your passage chunking size, and click <b>Analyze selected documents</b>.</p>
+                
+                <b><li>Explore the Research Workspace:</li></b>
+                <p>Switch to the <i>Research Workspace</i> tab to inspect discovered themes, assign codes, merge groups, and review highlights.</p>
+            </ol>
+            <p><b>Need Ollama?</b> Run <code>ollama pull llama3.1</code> locally if you want AI-generated readable theme names!</p>
+        """)
+        layout.addWidget(browser)
+        
+        close_btn = QPushButton("Got it!")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+        
+        dialog.exec()
+
 
     def update_naming_controls(self, _index=-1):
         busy = bool(self._analysis_worker or self._worker or self._segment_worker or self._ollama_worker)
