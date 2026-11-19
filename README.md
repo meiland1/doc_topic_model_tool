@@ -9,7 +9,6 @@ The application runs entirely on your computer. Everything it needs is included 
 1. Open the [latest release](../../releases/latest) and download the file for your computer:
    - **Windows 10 or 11:** `TopicModelTool-Setup-<version>.exe`
    - **Mac with Apple silicon (M1 or newer):** `TopicModelTool-<version>-macOS-arm64.dmg`
-   - **Mac with an Intel processor:** `TopicModelTool-<version>-macOS-x86_64.dmg`
    - **Optional, for readable theme names:** all three parts of the naming model, `naming-model-llama3.1-8b.tmtpack.001`, `.002` and `.003` (about 4.9 GB together; GitHub limits each file to 2 GB, so it is split). Keep the parts together. On Windows, save them in the same folder as the installer. Naming works best with 16 GB of memory.
 2. Double-click the file and follow the steps.
 

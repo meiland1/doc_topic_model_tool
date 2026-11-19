@@ -56,11 +56,14 @@ jobs:
   macos:
     needs: test
     strategy:
+      # Let each Mac build finish on its own instead of cancelling the others.
+      fail-fast: false
       matrix:
         include:
-          - { runner: macos-14, arch: arm64 }
-          # macos-13 was retired in Dec 2025; macos-15-intel is the last Intel image (until ~Aug 2027).
-          - { runner: macos-15-intel, arch: x86_64 }
+          # macos-14 was retired on 2026-11-02; macos-15 is Apple silicon.
+          - { runner: macos-15, arch: arm64 }
+          # No Intel Mac build: PyTorch stopped publishing Intel Mac wheels after 2.2.2,
+          # which is too old for the current sentence-transformers/BERTopic stack.
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5

@@ -21,7 +21,8 @@ git push origin v0.2.0
 
 1. runs the test suite;
 2. builds the Windows installer (`TopicModelTool-Setup-<version>.exe`) with Inno Setup;
-3. builds macOS disk images for Apple silicon and Intel, ad-hoc signed;
+3. builds a macOS disk image for Apple silicon, ad-hoc signed (no Intel Mac build:
+   PyTorch has no Intel Mac wheels after 2.2.2);
 4. builds the theme-naming model pack once, for both platforms: `llama3.1:8b`
    (~4.9 GB) written as `naming-model-llama3.1-8b.tmtpack.001`, `.002`, `.003`
    plus its license text;
