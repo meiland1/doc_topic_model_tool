@@ -123,7 +123,8 @@ def fetch_engine(gpu: str = "standard"):
             archive.extractall(target, filter="data")
         binary = target / "ollama"
         if not binary.is_file():
-            nested = next(target.rglob("ollama"), None)
+            # rglob also matches folders (lib/ollama), so only accept a file.
+            nested = next((p for p in target.rglob("ollama") if p.is_file()), None)
             if nested is None:
                 raise SystemExit("Could not find the ollama binary in the macOS download.")
             shutil.move(str(nested), binary)
@@ -132,8 +133,14 @@ def fetch_engine(gpu: str = "standard"):
         data = download(f"{RELEASES}/ollama-linux-amd64.tgz")
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
             archive.extractall(target, filter="data")
-        found = next(target.rglob("ollama"), None)
-        if found and found != target / "ollama":
+        # The tarball has bin/ollama (the program) and lib/ollama/ (its libraries).
+        # Copy the program next to lib/ so it finds lib/ollama the same way on every OS.
+        found = target / "bin" / "ollama"
+        if not found.is_file():
+            found = next((p for p in target.rglob("ollama") if p.is_file()), None)
+        if found is None:
+            raise SystemExit("Could not find the ollama binary in the Linux download.")
+        if found != target / "ollama":
             shutil.copy2(found, target / "ollama")
         (target / "ollama").chmod(0o755)
     prune_gpu_libraries(target, gpu)

@@ -21,19 +21,22 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "${{ env.PYTHON_VERSION }}" }
       - run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0 libgl1
-      - run: pip install -e ".[test]"
+      # Several tests import numpy/BERTopic, so install the analysis extras too.
+      # CPU-only PyTorch keeps this job fast; the tests never need a GPU.
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -e ".[analysis,test]"
       - run: QT_QPA_PLATFORM=offscreen python -m pytest -q
 
   windows:
     needs: test
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "${{ env.PYTHON_VERSION }}" }
       - name: Install build dependencies (CPU-only PyTorch keeps the installer small)
         run: |
@@ -60,8 +63,8 @@ jobs:
           - { runner: macos-15-intel, arch: x86_64 }
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "${{ env.PYTHON_VERSION }}" }
       - run: pip install -e ".[analysis,build]"
       - run: python scripts/fetch_resources.py
@@ -77,8 +80,8 @@ jobs:
   model-pack:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "${{ env.PYTHON_VERSION }}" }
       # llama3.1:8b needs ~10 GB while building (model store + pack); make room.
       - name: Free runner disk space
@@ -102,7 +105,7 @@ jobs:
     needs: [windows, macos, model-pack]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with: { path: artifacts, merge-multiple: true }
       - name: Refuse files GitHub would reject (2 GiB per file)
