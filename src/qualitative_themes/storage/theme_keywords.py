@@ -4,6 +4,12 @@ from qualitative_themes.storage.database import connect
 
 
 def theme_keyword_scores_from_connection(conn, theme_id, run_id=None):
+    """Top 10 (word, score) pairs for a theme.
+
+    Uses `run_id` if that run suggested the theme, otherwise the most recent
+    completed run that did. Returns [] for a theme the model never suggested
+    (e.g. one the researcher created).
+    """
     rows = conn.execute("""
         SELECT m.bertopic_id,r.id,r.model_info_json
         FROM model_suggestions m JOIN analysis_runs r ON r.id=m.run_id

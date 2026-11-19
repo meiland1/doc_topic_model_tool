@@ -39,6 +39,9 @@ def test_real_guided_and_zero_shot_pipelines():
             output=fit_bertopic(passages,settings,Path(temporary),print,None)
             print('RESULT',method,output.assignments, output.model_info.get('predefined_topic_labels'),flush=True)
             assert len(output.assignments)==12
+            assert all(value >= 0 for value in output.model_info['stage_timings'].values())
+            assert output.model_info['embedding_cache'] == {'reused': 0 if method == 'guided' else 12,
+                                                          'computed': 12 if method == 'guided' else 0}
             if method=='zero_shot':
                 assert output.assignments[:6]==[0]*6
                 assert all(t!=0 for t in output.assignments[6:])

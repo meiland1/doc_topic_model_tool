@@ -10,12 +10,25 @@ from qualitative_themes.analysis.topics import check_cancel
 from qualitative_themes.analysis.transcript_text import clean_model_text
 
 
+MAX_RANGES = 30000
+MAP_POINTS = 6000
+
+
+def map_sample(count, limit=MAP_POINTS):
+    """Evenly spaced indices so large maps stay responsive; every theme keeps its share."""
+    if count <= limit:
+        return list(range(count))
+    step = count / limit
+    return sorted({int(i * step) for i in range(limit)})
+
+
 def visualization_snapshot(directory, run_id, should_cancel=None):
+    """Current effective coding of a run, capped at MAX_RANGES ranges."""
     if not run_id:
         raise ValueError('Choose a saved analysis to visualize.')
     data = build_export(directory, run_id, should_cancel=should_cancel)
-    if len(data['passages']) > 5000:
-        raise ValueError('This view supports up to 5,000 coded ranges. Create an analysis with a smaller document selection for visualization.')
+    if len(data['passages']) > MAX_RANGES:
+        raise ValueError(f'This view supports up to {MAX_RANGES:,} coded ranges. Create an analysis with a smaller document selection for visualization.')
     themes = {t['theme_id']: t for t in data['themes'] if t['unique_coded_ranges']}
     if len(themes) > 100:
         raise ValueError('This view supports up to 100 nonempty themes. Refine to fewer themes or choose a smaller analysis.')
@@ -46,6 +59,11 @@ def visualization_snapshot(directory, run_id, should_cancel=None):
 
 
 def restored_theme_mapping(before, after, theme_topics):
+    """{bertopic_topic: theme_id} after BERTopic renumbers the saved groups.
+
+    Raises ValueError if the refit changed any membership, so a plot can never
+    show different groups than the saved coding.
+    """
     if len(before) != len(after):
         raise ValueError('The visualization model changed the saved passage count.')
     restored = {}
@@ -72,6 +90,7 @@ def project_2d(vectors):
 
 
 def local_embeddings(directory, texts, metadata, progress, should_cancel):
+    """Vectors for the snapshot's passages, from the project cache or the bundled encoder."""
     import numpy as np
     settings = settings_from_dict(metadata['settings'])
     identity = metadata['model_info'].get('embedding_identity') or metadata['model_info'].get('source_model_identity')
@@ -93,26 +112,20 @@ def local_embeddings(directory, texts, metadata, progress, should_cancel):
             missing.append(text)
     if missing:
         progress('Loading local embedding weights for the passage map…')
-        try:
-            from sentence_transformers import SentenceTransformer
-            encoder = SentenceTransformer(settings.embedding_model, revision=settings.embedding_revision,
-                cache_folder=str(Path(directory)/'models'/'weights'), local_files_only=True, device='cpu')
-        except Exception as exc:
-            raise ValueError('Map embeddings are unavailable locally. Use Download model once, then build the view again.') from exc
+        from qualitative_themes.analysis.encoder import load_encoder
+        encoder = load_encoder(settings, directory)
         # If existing cache shape is incompatible, regenerate the full batch in memory.
         if dimension and dimension != encoder.get_sentence_embedding_dimension():
             missing = list(dict.fromkeys(texts)); vectors = {}
-        for offset in range(0, len(missing), settings.batch_size):
-            check_cancel(should_cancel)
-            batch = missing[offset:offset+settings.batch_size]
-            progress(f'Embedding map passages: {min(offset+len(batch),len(missing))}/{len(missing)}…')
-            values = encoder.encode(batch, normalize_embeddings=True, convert_to_numpy=True, show_progress_bar=False)
-            vectors.update(zip(batch, values))
+        from qualitative_themes.analysis.encoder import encode_texts
+        vectors.update(encode_texts(encoder, missing, settings, progress,
+                                    lambda: bool(should_cancel and should_cancel())))
     check_cancel(should_cancel)
     return np.stack([vectors[text] for text in texts])
 
 
 def offline_html(figure):
+    """Plotly figure as standalone HTML (plotly.js inlined, no network)."""
     figure.update_layout(autosize=True, width=None, height=650)
     content = figure.to_html(include_plotlyjs=True, full_html=True, config={'responsive': True, 'displaylogo': False})
     policy = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; worker-src blob:; connect-src 'none'"
@@ -120,6 +133,13 @@ def offline_html(figure):
 
 
 def build_visualizations(directory, run_id, progress=None, should_cancel=None, embedding_provider=None, model_factory=None):
+    """Build map / heatmap / hierarchy for a run. Read-only for the project.
+
+    Returns {'html': {view: html}, 'messages': {view: why_missing}, 'tree',
+    'snapshot', 'notes'}. Each view fails on its own and records a message
+    instead of failing the whole call. Slow: run in a worker; results are
+    cached by view_cache.
+    """
     progress = progress or (lambda message: None)
     snapshot = visualization_snapshot(directory, run_id, should_cancel)
     settings = settings_from_dict(snapshot['metadata']['settings'])
@@ -145,7 +165,7 @@ def build_visualizations(directory, run_id, progress=None, should_cancel=None, e
     topic_themes = restored_theme_mapping(snapshot['assignments'], model.topics_, snapshot['theme_topics'])
     labels = {topic: snapshot['themes'][tid]['theme'] for topic, tid in topic_themes.items()}
     model.set_topic_labels({topic: html.escape(label) for topic,label in labels.items()})
-    result = {'html': {}, 'messages': {}, 'tree': '', 'snapshot': snapshot}
+    result = {'html': {}, 'messages': {}, 'tree': '', 'snapshot': snapshot, 'notes': []}
     check_cancel(should_cancel)
     try:
         progress('Preparing the document map from local passage embeddings…')
@@ -154,8 +174,20 @@ def build_visualizations(directory, run_id, progress=None, should_cancel=None, e
         coordinates = project_2d(embeddings)
         by_text = dict(zip(unique, coordinates))
         hover = [html.escape(snapshot['passages'][i]['document']+' · '+snapshot['passages'][i]['quote'][:500]) for i in snapshot['range_indices']]
-        fig = model.visualize_documents(hover, reduced_embeddings=np.asarray([by_text[text] for text in texts]),
-            custom_labels=True, hide_annotations=True, title='Document map — passages (PCA projection)')
+        keep = map_sample(len(texts))
+        title = 'Document map — passages (PCA projection)'
+        if len(keep) < len(texts):
+            title += f' · showing {len(keep):,} of {len(texts):,} evenly spaced points'
+            result['notes'].append(f'The map shows {len(keep):,} of {len(texts):,} passages so it stays responsive; '
+                                   'the heatmap and hierarchy use all of them.')
+        original_topics = model.topics_
+        model.topics_ = [original_topics[i] for i in keep]
+        try:
+            fig = model.visualize_documents([hover[i] for i in keep],
+                reduced_embeddings=np.asarray([by_text[texts[i]] for i in keep]),
+                custom_labels=True, hide_annotations=True, title=title)
+        finally:
+            model.topics_ = original_topics
         result['html']['map'] = offline_html(fig)
     except Exception as exc:
         from qualitative_themes.analysis.topics import AnalysisCancelled

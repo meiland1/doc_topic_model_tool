@@ -14,6 +14,7 @@ from qualitative_themes.storage.database import connect
 
 @dataclass(frozen=True)
 class ImportOutcome:
+    """Result for one file in an import batch. Never raised, always returned."""
     filename: str
     status: str  # imported, restored, duplicate, failed
     document_id: str | None = None
@@ -30,6 +31,18 @@ def _sha256(path: Path) -> str:
 
 
 def import_document(directory: Path, source: Path) -> ImportOutcome:
+    """Copy one file into sources/ and store its extracted text.
+
+    Pre: `directory` is an open project; `source` is a PDF, DOCX or TXT.
+    Post (status):
+      imported  - new documents row (status 'ready') + document_pages rows,
+                  and a snapshot at sources/<document_id><suffix>
+      restored  - same file was imported before and later removed; it's back
+      duplicate - same bytes (SHA-256) already in the project; nothing changes
+      failed    - nothing is left behind (the copied snapshot is deleted)
+
+    Duplicates are detected by content hash, not filename.
+    """
     source = Path(source)
     if source.suffix.lower() not in {".pdf", ".docx", ".txt"}:
         return ImportOutcome(source.name, "failed", message="Choose a PDF, DOCX, or TXT file.")
@@ -73,13 +86,18 @@ def import_document(directory: Path, source: Path) -> ImportOutcome:
 
 
 def list_documents(directory: Path, include_removed: bool = False) -> list[tuple[str, str, str]]:
+    """Rows are (id, original_name, extraction_status) in import order."""
     with connect(directory) as conn:
         rows = conn.execute("SELECT id, original_name, extraction_status FROM documents ORDER BY imported_at, rowid").fetchall()
     return rows if include_removed else [row for row in rows if row[2] != "removed"]
 
 
 def _change_availability(directory: Path, document_ids: list[str], removing: bool) -> int:
-    """A reversible batch change; never delete source snapshots or research rows."""
+    """A reversible batch change; never delete source snapshots or research rows.
+
+    Pre: every id exists and is currently in the `expected` state.
+    Post: all of them flip state in one transaction, or none do.
+    """
     if not document_ids or len(set(document_ids)) != len(document_ids):
         raise ValueError("Select one or more distinct documents.")
     expected, target = ("ready", "removed") if removing else ("removed", "ready")
@@ -101,6 +119,7 @@ def _change_availability(directory: Path, document_ids: list[str], removing: boo
 
 
 def remove_documents(directory: Path, document_ids: list[str]) -> int:
+    """Hide documents from new analyses and views. Reversible with restore_documents()."""
     return _change_availability(directory, document_ids, removing=True)
 
 
@@ -109,6 +128,11 @@ def restore_documents(directory: Path, document_ids: list[str]) -> int:
 
 
 def get_document(directory: Path, document_id: str) -> tuple[str, str, list[tuple[int | None, int | None, int, int]]]:
+    """Returns (original_name, canonical_text, spans).
+
+    spans are (page_number, paragraph_number, start_char, end_char) ordered by
+    start_char. Raises KeyError for an unknown id.
+    """
     with connect(directory) as conn:
         row = conn.execute("SELECT original_name, canonical_text FROM documents WHERE id = ?", (document_id,)).fetchone()
         if row is None:

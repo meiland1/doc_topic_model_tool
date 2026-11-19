@@ -5,6 +5,12 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgre
 
 
 class TaskProgress(QWidget):
+    """The progress strip shared by every background task.
+
+    Lifecycle: begin(title) -> update_stage(msg)* -> terminal(outcome, msg)
+    on failure/cancel -> finish(). cancel_requested() is wired to
+    MainWindow.cancel_analysis().
+    """
     cancel_requested = Signal()
 
     def __init__(self, parent=None):

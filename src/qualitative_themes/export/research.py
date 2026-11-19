@@ -1,4 +1,9 @@
-"""Read-only, consistent exports of the researcher's effective workspace coding."""
+"""Read-only, consistent exports of the researcher's effective workspace coding.
+
+build_export() gathers everything in one read transaction; the write_*
+functions turn that into JSON/CSV and replace the destination file
+atomically. Exports never modify the project.
+"""
 import csv
 from datetime import datetime, timezone
 import json
@@ -22,7 +27,14 @@ THEME_COUNTS = ("Unique (document, start, end) ranges within each theme. A multi
 
 
 def build_export(directory, run_id=None, progress=None, should_cancel=None):
-    """Use one SQLite read transaction for every assignment, label, and note."""
+    """Use one SQLite read transaction for every assignment, label, and note.
+
+    run_id=None exports researcher codings across the whole project ("Manual
+    coding only"). With a run_id it exports that run's effective assignments
+    (codings + unrejected suggestions) for the run's documents only.
+    Returns {'metadata', 'themes', 'passages'}. Raises AnalysisCancelled if
+    should_cancel() turns True between themes.
+    """
     progress = progress or (lambda message: None)
     def check():
         if should_cancel and should_cancel():
@@ -141,6 +153,7 @@ def build_export(directory, run_id=None, progress=None, should_cancel=None):
 
 
 def _destination(directory, destination):
+    """Resolve the output path and refuse anything inside the project's own files."""
     destination = Path(destination).expanduser().resolve()
     root = Path(directory).resolve()
     protected = {root / DB_NAME}
@@ -157,6 +170,7 @@ def _check_cancel(should_cancel):
 
 def _write_atomic(destination, write, encoding, should_cancel=None):
     # Do not replace the previous export if a write fails.
+    """Write to a temp file in the same folder, then os.replace(); the old file survives any failure."""
     fd, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
     try:
         with os.fdopen(fd, "w", encoding=encoding, newline="") as stream:
@@ -180,6 +194,10 @@ def _context(metadata):
 
 
 def write_codebook(directory, run_id, destination, progress=None, should_cancel=None):
+    """One row/object per theme. Format is chosen by suffix (.json or .csv).
+
+    Returns (theme_count, unique_ranges).
+    """
     destination = _destination(directory, destination)
     data = build_export(directory, run_id, progress, should_cancel)
     if destination.suffix.lower() == ".json":
@@ -205,6 +223,10 @@ def write_codebook(directory, run_id, destination, progress=None, should_cancel=
 
 
 def write_coded_passages(directory, run_id, destination, progress=None, should_cancel=None):
+    """One CSV row per unique (document, start, end) range with all its themes.
+
+    Returns (unique_ranges, theme_assignments).
+    """
     destination = _destination(directory, destination)
     if destination.suffix.lower() != ".csv":
         raise ValueError("Coded passages must use a .csv filename.")

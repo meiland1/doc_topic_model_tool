@@ -1,4 +1,15 @@
-"""Persistent researcher decisions and run-scoped model suggestion precedence."""
+"""Persistent researcher decisions and run-scoped model suggestion precedence.
+
+Two kinds of theme assignment live side by side:
+  - codings: what the researcher decided (origin 'researcher'), with a state
+    of active / removed / rejected / merged_duplicate. Rows are never deleted.
+  - model_suggestions: what one analysis run proposed, per segment.
+
+What the workspace shows for a theme is effective_assignments(): researcher
+codings first, then that run's suggestions unless the researcher rejected
+or removed the same exact range. Every change also writes a history_events
+row so it can be listed and undone (see storage/history.py).
+"""
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,6 +19,9 @@ from qualitative_themes.storage.database import connect
 
 
 def create_theme(directory: Path, label: str) -> str:
+    """Pre: `label` is not blank and not already used by an active theme (case-insensitive).
+    Post: returns the new theme id; logs 'theme_created'.
+    """
     label = label.strip()
     if not label:
         raise ValueError("Enter a theme name.")
@@ -29,6 +43,7 @@ def analysis_document_ids(directory: Path, run_id: str) -> set[str]:
 
 
 def analysis_document_ids_from_connection(conn, run_id):
+    """Selected corpus for a run (falls back to the run's segments for old runs)."""
     row = conn.execute("SELECT settings_json FROM analysis_runs WHERE id=?", (run_id,)).fetchone()
     if row is None:
         return set()
@@ -39,6 +54,13 @@ def analysis_document_ids_from_connection(conn, run_id):
 
 
 def list_themes(directory: Path, run_id: str | None = None) -> list[tuple[str, str, int]]:
+    """Rows are (theme_id, label, count), sorted by label.
+
+    run_id=None: researcher-created themes plus anything with researcher codings;
+    count is active researcher codings.
+    run_id set: themes that run suggested plus ones with codings in its corpus;
+    count is effective assignments (codings + unsuppressed suggestions).
+    """
     with connect(directory) as conn:
         rows = conn.execute("""
             SELECT t.id, coalesce(t.user_label, t.generated_label, 'Unnamed theme'),
@@ -53,13 +75,21 @@ def list_themes(directory: Path, run_id: str | None = None) -> list[tuple[str, s
             return [(tid, label, count) for tid, label, count in rows
                     if tid in manual or count > 0]
         visible = {r[0] for r in conn.execute("SELECT theme_id FROM model_suggestions WHERE run_id=?", (run_id,))}
-    scoped = [(tid, label, len(effective_assignments(directory, tid, run_id)))
-              for tid, label, _ in rows]
+        # One read snapshot for every theme instead of a connection per theme.
+        scoped = [(tid, label, len(effective_assignments_from_connection(conn, tid, run_id)))
+                  for tid, label, _ in rows]
     return [(tid, label, count) for tid, label, count in scoped
             if tid in visible or count]
 
 
 def add_coding(directory: Path, document_id: str, start: int, end: int, theme_id: str) -> str:
+    """Code [start, end) of a document with a theme.
+
+    Pre: the range is inside the document text and not only whitespace; the
+    theme is active.
+    Post: returns the coding id. Coding the exact same range twice returns the
+    existing id instead of adding a duplicate.
+    """
     with connect(directory) as conn:
         row = conn.execute("SELECT canonical_text FROM documents WHERE id = ?", (document_id,)).fetchone()
         if row is None or not (0 <= start < end <= len(row[0])):
@@ -81,6 +111,11 @@ def add_coding(directory: Path, document_id: str, start: int, end: int, theme_id
 
 
 def occurrences(directory: Path, theme_id: str, run_id: str | None = None) -> list[tuple[str, str, str, int, int, str]]:
+    """Rows are (assignment_id, document_id, name, start, end, text) in reading order.
+
+    With run_id, includes that run's model suggestions; without, researcher
+    codings only.
+    """
     if run_id is not None:
         with connect(directory) as conn:
             documents = {row[0]: (row[1], row[2], i) for i, row in enumerate(conn.execute(
@@ -113,6 +148,7 @@ def _active_theme(conn, theme_id: str) -> tuple[str, str]:
 
 
 def rename_theme(directory: Path, theme_id: str, new_label: str) -> None:
+    """Pre: theme is active and `new_label` is unique among active themes. Renaming to the same label is a no-op."""
     new_label = new_label.strip()
     if not new_label:
         raise ValueError("Enter a theme name.")
@@ -127,7 +163,11 @@ def rename_theme(directory: Path, theme_id: str, new_label: str) -> None:
 
 
 def remove_coding(directory: Path, coding_id: str) -> None:
-    """Remove one researcher coding, preserving its record and history."""
+    """Remove one researcher coding, preserving its record and history.
+
+    Post: state becomes 'removed', which also hides any model suggestion at
+    the same range.
+    """
     with connect(directory) as conn:
         row = conn.execute("SELECT document_id, theme_id, start_char, end_char FROM codings WHERE id = ? AND state = 'active'", (coding_id,)).fetchone()
         if row is None:
@@ -139,7 +179,12 @@ def remove_coding(directory: Path, coding_id: str) -> None:
 
 def reject_model_suggestion(directory: Path, document_id: str, start: int, end: int,
                             theme_id: str) -> str:
-    """Keep an explicit rejection so the same model suggestion stays hidden."""
+    """Keep an explicit rejection so the same model suggestion stays hidden.
+
+    Post: a 'rejected' coding row exists for the exact range. Idempotent.
+    It's stored per theme, not per run, so it keeps hiding that range wherever
+    the theme identity is reused (e.g. after a refinement).
+    """
     with connect(directory) as conn:
         _active_theme(conn, theme_id)
         row = conn.execute("SELECT canonical_text FROM documents WHERE id = ?", (document_id,)).fetchone()
@@ -163,13 +208,20 @@ def effective_assignments(directory: Path, theme_id: str, run_id: str | None = N
     Explicit rejections suppress model suggestions at the same range, while a
     subsequent human active addition remains visible. Call with a specific run
     ID; never combine model topic IDs across runs.
+
+    Rows are (assignment_id, document_id, start, end, origin), origin being
+    'researcher' or 'model'.
     """
     with connect(directory) as conn:
         return effective_assignments_from_connection(conn, theme_id, run_id)
 
 
 def effective_assignments_from_connection(conn, theme_id, run_id=None):
-    """Same precedence rules within a caller-owned read snapshot."""
+    """Same precedence rules within a caller-owned read snapshot.
+
+    Use this inside an existing connect() block when computing several themes
+    so they all see the same data.
+    """
     manual = conn.execute("SELECT id, document_id, start_char, end_char FROM codings WHERE theme_id = ? AND origin = 'researcher' AND state = 'active'", (theme_id,)).fetchall()
     rejected = {(r[0], r[1], r[2]) for r in conn.execute(
         "SELECT document_id, start_char, end_char FROM codings WHERE theme_id = ? AND state IN ('rejected', 'removed')", (theme_id,))}
@@ -193,7 +245,13 @@ def effective_assignments_from_connection(conn, theme_id, run_id=None):
 
 
 def merge_themes(directory: Path, source_id: str, target_id: str) -> None:
-    """Move source work into target; retain duplicate provenance and notes."""
+    """Move source work into target; retain duplicate provenance and notes.
+
+    Pre: two different active themes.
+    Post: source has status 'merged' (merged_into_id = target). Codings that
+    already exist on target at the same range become 'merged_duplicate' and
+    their notes move to the surviving coding.
+    """
     if source_id == target_id:
         raise ValueError("Choose two different themes to merge.")
     with connect(directory) as conn:
@@ -216,6 +274,7 @@ def merge_themes(directory: Path, source_id: str, target_id: str) -> None:
 
 def add_note(directory: Path, body: str, *, document_id: str | None = None,
              theme_id: str | None = None, coding_id: str | None = None) -> str:
+    """Attach a memo to exactly one of: a document, a theme, or an active coding."""
     body = body.strip()
     if not body or sum(x is not None for x in (document_id, theme_id, coding_id)) != 1:
         raise ValueError("Write a note and choose exactly one document, theme, or passage.")
@@ -250,6 +309,7 @@ def update_note(directory: Path, note_id: str, body: str) -> None:
 
 def list_notes(directory: Path, *, document_id: str | None = None,
                theme_id: str | None = None, coding_id: str | None = None) -> list[tuple[str, str]]:
+    """Rows are (note_id, body) for exactly one target, oldest first."""
     args = [x for x in (document_id, theme_id, coding_id) if x is not None]
     if len(args) != 1:
         raise ValueError("Choose one note target.")
@@ -259,6 +319,7 @@ def list_notes(directory: Path, *, document_id: str | None = None,
 
 
 def themes_for_range(directory: Path, document_id: str, start: int, end: int, run_id: str | None = None) -> list[str]:
+    """Labels of themes assigned to exactly [start, end), with the same run rules as list_themes."""
     if run_id:
         return [label for tid, label, _ in list_themes(directory, run_id)
                 if any(doc == document_id and a == start and b == end
@@ -274,6 +335,7 @@ def themes_for_range(directory: Path, document_id: str, start: int, end: int, ru
 
 
 def assignment_origin(directory: Path, assignment_id: str) -> str:
+    """'researcher' if the id is a codings row, otherwise 'model' (a model_suggestions id)."""
     with connect(directory) as conn:
         return "researcher" if conn.execute("SELECT 1 FROM codings WHERE id=?", (assignment_id,)).fetchone() else "model"
 

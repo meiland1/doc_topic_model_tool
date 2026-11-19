@@ -211,103 +211,6 @@ def test_main_window_refinement_cancel_keeps_selected_run(generated_workspace, m
         window.close()
 
 
-def _run_passage_preview(window, all_documents=False):
-    """Wait for the real segmentation worker with a bounded offscreen event loop."""
-    loop = QEventLoop()
-    timer = QTimer()
-    timer.setSingleShot(True)
-    timer.timeout.connect(loop.quit)
-    window.preview_passages(all_documents=all_documents)
-    assert window._segment_worker is not None
-    window._segment_worker.finished.connect(loop.quit)
-    timer.start(5000)
-    loop.exec()
-    timer.stop()
-    assert window._segment_worker is None, "Preview worker did not finish in time"
-
-
-def test_preview_uses_current_selected_document_and_clears_stale_passages(generated_workspace):
-    from PySide6.QtCore import QItemSelectionModel, Qt
-    app, workspace, docs, directory, _ = generated_workspace
-    window = MainWindow()
-    try:
-        window._show_project(open_project(directory))
-        window.unit_selector.setCurrentText("Paragraphs")
-        for row in [1, 0, 1]:
-            window.document_list.setCurrentRow(row, QItemSelectionModel.SelectionFlag.ClearAndSelect)
-            assert not window.segment_list.count()
-            assert not window.segment_excerpt.toPlainText()
-            _run_passage_preview(window)
-            assert window.segment_list.count() == 6
-            assert {window.segment_list.item(i).data(Qt.ItemDataRole.UserRole)[0]
-                    for i in range(window.segment_list.count())} == {docs[row]}
-            assert f"document {row}" in window.segment_excerpt.toPlainText()
-            assert window.document_list.currentRow() == row
-            assert window.document_list.isEnabled() and window.unit_selector.isEnabled()
-    finally:
-        window.close()
-
-
-def test_preview_multi_selection_keeps_selection_and_current_document(generated_workspace):
-    from PySide6.QtCore import QItemSelectionModel, Qt
-    app, workspace, docs, directory, _ = generated_workspace
-    window = MainWindow()
-    try:
-        window._show_project(open_project(directory))
-        window.unit_selector.setCurrentText("Paragraphs")
-        for row in range(window.document_list.count()):
-            window.document_list.item(row).setSelected(True)
-        window.document_list.setCurrentItem(window.document_list.item(1), QItemSelectionModel.SelectionFlag.NoUpdate)
-        _run_passage_preview(window)
-        assert window.segment_list.count() == 12
-        assert "document 1" in window.segment_excerpt.toPlainText()
-        window.segment_list.setCurrentRow(0)
-        assert "document 0" in window.segment_excerpt.toPlainText()
-        assert {item.data(Qt.ItemDataRole.UserRole) for item in window.document_list.selectedItems()} == set(docs)
-        assert window.segment_list.count() == 12
-    finally:
-        window.close()
-
-
-def test_preview_without_selected_documents_does_not_start_worker(generated_workspace):
-    app, workspace, docs, directory, _ = generated_workspace
-    window = MainWindow()
-    try:
-        window._show_project(open_project(directory))
-        window.document_list.clearSelection()
-        window.preview_passages()
-        assert window._segment_worker is None
-        assert "Select documents to preview" in window.import_status.text()
-    finally:
-        window.close()
-
-
-def test_preview_all_includes_unselected_documents_and_excludes_removed(generated_workspace):
-    from PySide6.QtCore import QItemSelectionModel, Qt
-    from qualitative_themes.storage.documents import remove_documents
-    app, workspace, docs, directory, _ = generated_workspace
-    window = MainWindow()
-    try:
-        window._show_project(open_project(directory))
-        window.unit_selector.setCurrentText("Paragraphs")
-        window.document_list.setCurrentRow(1, QItemSelectionModel.SelectionFlag.ClearAndSelect)
-        _run_passage_preview(window, all_documents=True)
-        assert window.segment_list.count() == 12
-        assert "document 1" in window.segment_excerpt.toPlainText()
-        assert len(window.document_list.selectedItems()) == 1
-        window.document_list.clearSelection()
-        _run_passage_preview(window, all_documents=True)
-        assert window.segment_list.count() == 12
-        remove_documents(directory, [docs[0]])
-        window.refresh_documents(docs[1])
-        _run_passage_preview(window, all_documents=True)
-        assert window.segment_list.count() == 6
-        assert {window.segment_list.item(i).data(Qt.ItemDataRole.UserRole)[0]
-                for i in range(window.segment_list.count())} == {docs[1]}
-    finally:
-        window.close()
-
-
 def test_remove_restore_controls_and_saved_workspace_evidence(generated_workspace, monkeypatch):
     from PySide6.QtCore import QItemSelectionModel
     from PySide6.QtWidgets import QDialog, QListWidget, QMessageBox
@@ -352,7 +255,6 @@ def test_removing_all_documents_leaves_import_and_restore_available(generated_wo
         monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
         window.remove_selected_documents()
         assert not window.document_list.count()
-        assert not window.preview_all_button.isEnabled()
         assert not window.remove_documents_button.isEnabled()
         assert window.import_button.isEnabled()
         assert window.restore_documents_button.isEnabled()
@@ -521,3 +423,47 @@ def test_visualization_tab_without_analyses_is_disabled(tmp_path):
     assert not window.visualizations.build_button.isEnabled()
     assert not window.visualizations.evidence_button.isEnabled()
     window.close()
+
+
+def test_visualizations_persist_across_tab_switches_and_sessions(generated_workspace, monkeypatch):
+    from qualitative_themes.analysis.visualizations import visualization_snapshot
+    from qualitative_themes.gui.visualizations import VisualizationTab
+    import qualitative_themes.gui.visualizations as visual_gui
+    from PySide6.QtWidgets import QWidget
+    app, workspace, docs, directory, run = generated_workspace
+    class Viewer(QWidget):
+        def load(self, url): self.url = url
+        def setUrl(self, url): self.url = url
+        def stop(self): pass
+        def page(self): return self
+    def viewer(tab, key):
+        if key not in tab.viewers:
+            tab.viewers[key] = Viewer(tab)
+        return tab.viewers[key]
+    monkeypatch.setattr(VisualizationTab, '_viewer', viewer)
+    builds = []
+    def fake(directory, run, *args):
+        builds.append(run)
+        return {'snapshot': visualization_snapshot(directory, run), 'html': {'map': '<html>Map</html>'},
+                'messages': {}, 'tree': 'Saved tree', 'notes': []}
+    monkeypatch.setattr(visual_gui, 'build_visualizations', fake)
+    window = MainWindow()
+    window._show_project(open_project(directory))
+    window.tabs.setCurrentWidget(window.visualizations)
+    window.visualizations.build_button.click()
+    worker = window._analysis_worker
+    loop = QEventLoop(); worker.finished.connect(loop.quit)
+    QTimer.singleShot(10000, loop.quit); loop.exec(); app.processEvents()
+    assert window.visualizations.tree.toPlainText() == 'Saved tree'
+    window.tabs.setCurrentWidget(window.workspace)
+    window.tabs.setCurrentWidget(window.visualizations)
+    assert window.visualizations.tree.toPlainText() == 'Saved tree'
+    window.close()
+    second = MainWindow()
+    second._show_project(open_project(directory))
+    second.tabs.setCurrentWidget(second.visualizations)
+    assert second.visualizations.tree.toPlainText() == 'Saved tree'
+    assert second.visualizations.themes.count() > 0
+    assert 'match the current coding' in second.visualizations.status.text()
+    assert len(builds) == 1
+    second.close()

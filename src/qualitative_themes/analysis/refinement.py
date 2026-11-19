@@ -1,5 +1,21 @@
-"""Reviewable refinements. Proposal creation never edits an accepted analysis."""
+"""Reviewable refinements. Proposal creation never edits an accepted analysis.
+
+Flow:
+    propose_refinement()  builds a new run with status 'proposed' from a
+                          completed one (rename / new keywords / fewer
+                          themes / fresh discovery)
+    review_proposal()     shows how proposed groups overlap the old themes
+    apply_proposal()      researcher maps each proposed theme to an old
+                          identity (or a new one); the run becomes 'completed'
+    cancel_proposal()     run becomes 'cancelled', proposed themes 'discarded'
+
+A fingerprint of the source run and all research decisions is stored with
+the proposal. If anything changes before Apply, apply refuses and asks for
+a new proposal.
+"""
 from collections import defaultdict
+from dataclasses import replace
+from qualitative_themes.analysis.segment import TOKEN_SAFE_UNITS
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -11,7 +27,7 @@ from qualitative_themes.analysis.settings import settings_from_dict, validate_se
 from qualitative_themes.analysis.topics import (
     Passage, TopicOutput, check_cancel, fit_bertopic, prepare_passages, save_result,
 )
-from qualitative_themes.analysis.labels import _protected, label_run
+from qualitative_themes.analysis.labels import _protected, label_run, AUTO_NAMING_LIMIT
 from qualitative_themes.storage.database import connect
 from qualitative_themes.storage.coding import analysis_document_ids
 
@@ -30,6 +46,7 @@ def _event(conn, kind, details):
 
 def _fingerprint(conn, source_id):
     # Proposed themes are excluded; edits to real research decisions invalidate review.
+    """Hash of the source run plus all codings/notes/themes; changes invalidate a proposal."""
     data = {
         "run": conn.execute("SELECT settings_json,model_info_json,status FROM analysis_runs WHERE id=?", (source_id,)).fetchall(),
         "suggestions": conn.execute("SELECT id,theme_id,bertopic_id FROM model_suggestions WHERE run_id=? ORDER BY id", (source_id,)).fetchall(),
@@ -42,6 +59,7 @@ def _fingerprint(conn, source_id):
 
 
 def load_source(directory, run_id):
+    """Rebuild passages and the current partition of a completed run (respecting merges)."""
     with connect(directory) as conn:
         row = conn.execute("SELECT settings_json,model_info_json FROM analysis_runs WHERE id=? AND status='completed'", (run_id,)).fetchone()
         if row is None:
@@ -68,8 +86,18 @@ def load_source(directory, run_id):
             raise ValueError("A saved theme is missing; the analysis cannot be refined.")
         if theme not in groups:
             groups[theme] = len([n for n in groups.values() if n != -1]) if theme in ordinary else -1
+    exclude = bool(recorded.get("exclude_interviewer"))
+    excluded_by_doc = {}
+    if exclude:
+        from qualitative_themes.analysis.speakers import interviewer_ranges, labels_for
+        labels = labels_for(settings_from_dict(recorded))
+        for doc, _o, _s, _e, _d, text, *_ in rows:
+            if doc not in excluded_by_doc:
+                excluded_by_doc[doc] = interviewer_ranges(text, labels)
+    from qualitative_themes.analysis.speakers import without_ranges
     passages = [Passage(str(uuid4()), doc, ordinal, start, end,
-                        clean_model_text(text[start:end]), digest)
+                        clean_model_text(without_ranges(text, start, end, excluded_by_doc[doc]) if exclude else text[start:end]),
+                        digest)
                 for doc, ordinal, start, end, digest, text, *_ in rows]
     assignments = [groups[r[6]] for r in rows]
     keywords, representatives = {}, {}
@@ -92,6 +120,7 @@ def load_source(directory, run_id):
 
 
 def list_proposals(directory):
+    """Runs awaiting review: (id, started_at, model_info_json), newest first."""
     with connect(directory) as conn:
         return conn.execute("SELECT id,started_at,model_info_json FROM analysis_runs WHERE status='proposed' ORDER BY started_at DESC,rowid DESC").fetchall()
 
@@ -150,6 +179,13 @@ def fixed_partition_backend(passages, assignments, settings, operation, progress
 def propose_refinement(directory, source_id, operation, settings=None, unit=None,
                        progress=None, should_cancel=None, discovery_backend=None,
                        representation_backend=None, client_factory=None):
+    """Create a 'proposed' run from `source_id` without touching it.
+
+    Pre: `operation` is a key of OPERATIONS. Only 'discover' may change the
+    passage size or clustering settings.
+    Post: returns (proposal_run_id, passage_count). Slow for 'discover' (full
+    embedding and clustering): run in a worker thread.
+    """
     if operation not in OPERATIONS:
         raise ValueError("Choose a supported refinement operation.")
     progress = progress or (lambda message: None)
@@ -157,6 +193,8 @@ def propose_refinement(directory, source_id, operation, settings=None, unit=None
     source = load_source(directory, source_id)
     settings = settings or source["settings"]
     unit = unit or source["unit"]
+    if operation == 'discover' and unit in TOKEN_SAFE_UNITS:
+        settings = replace(settings, allow_truncation=False)
     if operation == "reduce" and source["settings"].analysis_method == "zero_shot":
         raise ValueError("Automatic reduction is disabled for zero-shot analyses. Merge themes explicitly in Research Workspace instead.")
     if operation != "discover" and unit != source["unit"]:
@@ -175,9 +213,14 @@ def propose_refinement(directory, source_id, operation, settings=None, unit=None
     passages = source["passages"]
     output = source["output"]
     if operation == "discover":
-        passages = prepare_passages(directory, unit, source["documents"])
+        from qualitative_themes.analysis.speakers import labels_for
+        segmentation = {}
+        passages = prepare_passages(directory, unit, source["documents"], settings.exclude_interviewer,
+                                    labels_for(settings), settings=settings, diagnostics=segmentation,
+                                    should_cancel=should_cancel)
         validate_settings(settings, len(passages))
         output = (discovery_backend or fit_bertopic)(passages, settings, Path(directory), progress, should_cancel)
+        output.model_info['segmentation'] = segmentation
     elif operation in {"words", "reduce"}:
         if settings.ngram_range not in {(1, 1), (1, 2)} or len(settings.ignored_words) > 500:
             raise ValueError("Choose supported keyword settings.")
@@ -206,6 +249,7 @@ def propose_refinement(directory, source_id, operation, settings=None, unit=None
         if any((a == -1) != (b == -1) for a, b in zip(source["output"].assignments, output.assignments)):
             raise ValueError("This refinement changed Uncategorized memberships unexpectedly.")
     if operation != "discover":
+        output.model_info['segmentation'] = source['model_info'].get('segmentation', {'method': 'legacy-word-v1'})
         from qualitative_themes.storage.provenance import combine_provenance
         new_origins = {}
         for previous, current in zip(source["output"].assignments, output.assignments):
@@ -247,7 +291,8 @@ def propose_refinement(directory, source_id, operation, settings=None, unit=None
                     if old["protected"] and old["user_label"] is None:
                         conn.execute("UPDATE themes SET user_label=? WHERE id=?", (old["label"], item["theme_id"]))
         if operation == "names" or settings.name_themes:
-            label_run(directory, proposal, settings.ollama_model, progress, should_cancel, client_factory, proposal=True)
+            label_run(directory, proposal, settings.ollama_model, progress, should_cancel, client_factory, proposal=True,
+                      max_themes=None if operation == 'names' else AUTO_NAMING_LIMIT)
         check_cancel(should_cancel)
     except Exception:
         cancel_proposal(directory, proposal)
@@ -269,6 +314,10 @@ def _groups(conn, run_id):
 
 
 def review_proposal(directory, proposal_id):
+    """Summary for the review dialog: per-theme rows with recommended old identities,
+    before/after counts, which researcher decisions are affected, and `stale`
+    (True if research decisions changed since the proposal was made).
+    """
     with connect(directory) as conn:
         row = conn.execute("SELECT model_info_json FROM analysis_runs WHERE id=? AND status='proposed'", (proposal_id,)).fetchone()
         if not row:
@@ -340,7 +389,13 @@ def proposal_evidence(directory, proposal_id, theme_id):
 
 
 def apply_proposal(directory, proposal_id, mappings):
-    """Reuse reviewed identities atomically; manual records are never rewritten."""
+    """Reuse reviewed identities atomically; manual records are never rewritten.
+
+    Pre: `mappings` covers every proposed theme: {proposed_id: old_theme_id or None}.
+    An old identity can be reused once and only if they share passages.
+    Post: the proposal is a normal completed run. Raises ValueError (and
+    changes nothing) if research decisions changed since the proposal was made.
+    """
     with connect(directory) as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT model_info_json FROM analysis_runs WHERE id=? AND status='proposed'", (proposal_id,)).fetchone()
@@ -385,6 +440,7 @@ def apply_proposal(directory, proposal_id, mappings):
 
 
 def cancel_proposal(directory, proposal_id):
+    """Discard a proposal. Safe to call twice."""
     with connect(directory) as conn:
         row = conn.execute("SELECT status FROM analysis_runs WHERE id=?", (proposal_id,)).fetchone()
         if row is None or row[0] != "proposed":

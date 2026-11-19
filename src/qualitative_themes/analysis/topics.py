@@ -1,24 +1,44 @@
-"""Corpus-wide analysis; Qt-free and injectable for weight-free storage tests."""
-from dataclasses import asdict, dataclass, field
+"""Corpus-wide analysis; Qt-free and injectable for weight-free storage tests.
+
+Flow of one analysis (called from a GUI worker thread):
+
+    analyze()
+      prepare_passages()   documents -> Passage list (source offsets + model text)
+      validate_settings()
+      fit_bertopic()       embed (with on-disk cache) -> UMAP -> HDBSCAN -> keywords
+                           (or zero-shot matching + discovery of the rest)
+      save_result()        one transaction: run, segments, themes, suggestions
+
+Nothing is written until save_result(), so a cancel or an error at any
+point before it leaves the project unchanged. Tests pass `backend=` to
+analyze() to skip the real models.
+"""
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 import hashlib
 from importlib.metadata import version, PackageNotFoundError
 import json
 from pathlib import Path
 from uuid import uuid4
+from time import perf_counter
 
 from qualitative_themes.analysis.transcript_text import MODEL_TEXT_VERSION
-from qualitative_themes.analysis.segment import model_text, segment_text
+from qualitative_themes.analysis.segment import TOKEN_SAFE_UNITS, model_text, segment_text
 from qualitative_themes.storage.database import connect
 from qualitative_themes.analysis.settings import AnalysisSettings, effective_parameters, validate_settings, vectorizer_options, small_corpus_warning
 
 
 class AnalysisCancelled(Exception):
+    """Raised by check_cancel(). Workers catch it and report "Cancelled"; nothing was saved."""
     pass
 
 
 @dataclass(frozen=True)
 class Passage:
+    """One analysis passage. start/end index the stored document text; `text` is
+    the cleaned model input (may differ from the source slice, e.g. with
+    interviewer turns removed), so never use it for highlighting.
+    """
     id: str
     document_id: str
     ordinal: int
@@ -30,6 +50,10 @@ class Passage:
 
 @dataclass
 class TopicOutput:
+    """What a backend returns. `assignments[i]` is the topic of passages[i]; -1 is Uncategorized.
+
+    representatives maps topic -> passage ids; scores is empty or one per passage.
+    """
     assignments: list[int]
     keywords: dict[int, list[tuple[str, float]]]
     representatives: dict[int, list[str]] = field(default_factory=dict)
@@ -38,38 +62,116 @@ class TopicOutput:
 
 
 def check_cancel(should_cancel):
+    """Raise AnalysisCancelled if the caller asked to stop. Cheap; call it often."""
     if should_cancel and should_cancel():
         raise AnalysisCancelled()
 
 
-def prepare_passages(directory, unit, document_ids):
+def prepare_passages(directory, unit, document_ids, exclude_interviewer=False, interviewer_labels=None,
+                     *, settings=None, diagnostics=None, token_budget=None, should_cancel=None):
+    """Passages for analysis. With ``exclude_interviewer``, turns whose speaker label is
+    in ``interviewer_labels`` (default: known interviewer labels) are left out of model text.
+
+    Pre: `document_ids` are distinct ids of 'ready' documents.
+    Post: passages in document order; empty ones (e.g. a passage that was only
+    interviewer text) are dropped. If `diagnostics` is passed it's filled with
+    segmentation stats that get saved with the run.
+    """
     if not document_ids or len(set(document_ids)) != len(document_ids):
         raise ValueError("Select one or more distinct documents to analyze together.")
+    if diagnostics is not None or unit in TOKEN_SAFE_UNITS:
+        from qualitative_themes.analysis.token_budget import load_token_budget
+        try:
+            token_budget = token_budget or load_token_budget(settings, directory)
+        except ValueError as exc:
+            if unit in TOKEN_SAFE_UNITS:
+                raise
+            if diagnostics is not None:
+                diagnostics['token_error'] = str(exc)
+    stats = diagnostics if diagnostics is not None else {}
+    stats.update({'method': ('semantic-adjacent-min-v2' if unit == 'Semantic passages' else
+                            'interview-turns-v1' if unit == 'Interview passages' else
+                            'automatic-token-v1' if unit in TOKEN_SAFE_UNITS else 'legacy-word-v1'),
+                  'preprocessing': MODEL_TEXT_VERSION, 'forced_splits': 0})
+    if unit == 'Interview passages':
+        stats.update({'speaker_turns': 0, 'speaker_fallbacks': 0, 'fallback_document_ids': []})
+    if token_budget:
+        stats['tokenizer'] = token_budget.identity
     with connect(directory) as conn:
         rows = conn.execute("SELECT id, canonical_text FROM documents WHERE extraction_status = 'ready' ORDER BY imported_at, rowid").fetchall()
     rows = [row for row in rows if row[0] in set(document_ids)]
     if len(rows) != len(document_ids):
         raise ValueError("A selected document is not ready or was not found.")
-    passages = [Passage(str(uuid4()), doc, i, span.start_char, span.end_char,
-                    model_text(text, span), hashlib.sha256(text[span.start_char:span.end_char].encode()).hexdigest())
-            for doc, text in rows for i, span in enumerate(segment_text(text, unit))]
-    return [passage for passage in passages if passage.text]
+    from qualitative_themes.analysis.speakers import interviewer_ranges
+    passages = []
+    semantic_provider = None
+    active_settings = settings or AnalysisSettings()
+    if unit == 'Semantic passages':
+        from qualitative_themes.analysis.semantic import sentence_vectors
+        stats.update({'experimental': True, 'semantic_threshold': active_settings.semantic_threshold,
+                      'semantic_min_tokens': active_settings.semantic_min_tokens})
+        semantic_provider = lambda texts: sentence_vectors(texts, directory, active_settings, should_cancel, stats)
+    for doc, text in rows:
+        check_cancel(should_cancel)
+        excluded = interviewer_ranges(text, interviewer_labels) if exclude_interviewer else ()
+        if unit == 'Interview passages':
+            from qualitative_themes.analysis.speakers import reliable_transcript_turns
+            if not reliable_transcript_turns(text):
+                excluded = ()
+                stats['fallback_document_ids'].append(doc)
+        for i, span in enumerate(segment_text(text, unit, token_budget=token_budget, excluded=excluded,
+                                              stats=stats, should_cancel=should_cancel, semantic_provider=semantic_provider,
+                                              semantic_threshold=active_settings.semantic_threshold,
+                                              semantic_min_tokens=active_settings.semantic_min_tokens)):
+            passages.append(Passage(str(uuid4()), doc, i, span.start_char, span.end_char, model_text(text, span, excluded),
+                                    hashlib.sha256(text[span.start_char:span.end_char].encode()).hexdigest()))
+    passages = [passage for passage in passages if passage.text]
+    if token_budget:
+        counts = []
+        for passage in passages:
+            check_cancel(should_cancel)
+            counts.append(token_budget.count(passage.text))
+        stats.update({'max_tokens': token_budget.maximum, 'largest_tokens': max(counts, default=0),
+                      'smallest_tokens': min(counts, default=0),
+                      'oversized': sum(n > token_budget.maximum for n in counts)})
+    return passages
 
 
 def analyze(directory: Path, unit: str, document_ids: list[str], settings=None,
             backend=None, progress=None, should_cancel=None) -> tuple[str, int]:
+    """Run a full analysis and save it. Returns (run_id, passage_count).
+
+    Pre: documents imported and ready; `settings` valid for the passage count
+    (checked here). Call off the GUI thread: this loads models and can take minutes.
+    Post: a 'completed' run with themes and model suggestions, or an exception
+    (ValueError with guidance / AnalysisCancelled) and no changes.
+    `progress(str)` gets short status lines for the progress dialog.
+    """
     settings = settings or AnalysisSettings()
+    if unit in TOKEN_SAFE_UNITS:
+        settings = replace(settings, allow_truncation=False)
     started_at = datetime.now(timezone.utc).isoformat()
     progress = progress or (lambda message: None)
     check_cancel(should_cancel)
     progress("Preparing exact source passages…")
-    passages = prepare_passages(directory, unit, document_ids)
+    preparation_started = perf_counter()
+    from qualitative_themes.analysis.speakers import labels_for
+    segmentation = {}
+    passages = prepare_passages(directory, unit, document_ids, settings.exclude_interviewer, labels_for(settings),
+                                settings=settings, diagnostics=segmentation, should_cancel=should_cancel)
+    preparation_seconds = perf_counter() - preparation_started
+    if settings.exclude_interviewer:
+        progress("Leaving interviewer turns out of theme finding…")
+    if segmentation.get('speaker_fallbacks'):
+        progress(f"Using Auto and retaining all turns in {segmentation['speaker_fallbacks']} document(s) with uncertain speaker boundaries.")
     validate_settings(settings, len(passages))
     warning = small_corpus_warning(settings, len(passages))
     if warning:
         progress(warning)
     check_cancel(should_cancel)
     output = (backend or fit_bertopic)(passages, settings, Path(directory), progress, should_cancel)
+    output.model_info['segmentation'] = segmentation
+    output.model_info.setdefault('stage_timings', {})['passage_preparation_seconds'] = preparation_seconds
     check_cancel(should_cancel)
     progress("Saving completed analysis…")
     run_id = save_result(directory, unit, document_ids, passages, settings, output, should_cancel, started_at)
@@ -77,6 +179,14 @@ def analyze(directory: Path, unit: str, document_ids: list[str], settings=None,
 
 
 def save_result(directory, unit, document_ids, passages, settings, output, should_cancel=None, started_at=None, status="completed"):
+    """Write a run and everything it produced in a single transaction.
+
+    Pre: one assignment per passage and representatives that belong to their topic.
+    Each passage's source text is re-hashed here, so if a document changed since
+    preparation nothing is saved.
+    Post: run (status 'completed' or 'proposed' for refinements), segments, one
+    theme per topic (generated label "Theme N: top, words"), and suggestions.
+    """
     if status not in {"completed", "proposed"}:
         raise ValueError("Unsupported analysis status.")
     if len(output.assignments) != len(passages) or (output.scores and len(output.scores) != len(passages)):
@@ -109,18 +219,25 @@ def save_result(directory, unit, document_ids, passages, settings, output, shoul
         check_cancel(should_cancel)
         conn.execute("INSERT INTO analysis_runs(id, started_at, completed_at, status, settings_json, model_info_json) VALUES (?, ?, ?, ?, ?, ?)",
                      (run_id, started_at, now, status, encoded_settings, encoded_info))
+        sources = {}
         for passage in passages:
-            row = conn.execute("SELECT canonical_text FROM documents WHERE id=?", (passage.document_id,)).fetchone()
-            if row is None or not 0 <= passage.start < passage.end <= len(row[0]) or hashlib.sha256(row[0][passage.start:passage.end].encode()).hexdigest() != passage.source_hash:
+            check_cancel(should_cancel)
+            if passage.document_id not in sources:
+                row = conn.execute("SELECT canonical_text FROM documents WHERE id=?", (passage.document_id,)).fetchone()
+                sources[passage.document_id] = row[0] if row else None
+            source = sources[passage.document_id]
+            if source is None or not 0 <= passage.start < passage.end <= len(source) or hashlib.sha256(source[passage.start:passage.end].encode()).hexdigest() != passage.source_hash:
                 raise ValueError("A source passage changed; no analysis was saved.")
             conn.execute("INSERT INTO segments VALUES (?, ?, ?, ?, ?, ?, ?)",
                          (passage.id, passage.document_id, run_id, passage.ordinal, passage.start, passage.end, passage.source_hash))
         for topic, theme_id in mapping.items():
+            check_cancel(should_cancel)
             words = [word for word, _ in output.keywords.get(topic, [])[:3]]
             label = "Uncategorized" if topic == -1 else f"Theme {topic + 1}: " + (", ".join(words) or "Unnamed")
             label = output.model_info.get("predefined_topic_labels", {}).get(str(topic), label)
             conn.execute("INSERT INTO themes(id, generated_label, creation_source, status) VALUES (?, ?, 'model', ?)", (theme_id, label, "proposed" if status == "proposed" else "active"))
         for i, (passage, topic) in enumerate(zip(passages, output.assignments)):
+            check_cancel(should_cancel)
             score = output.scores[i] if output.scores else None
             conn.execute("INSERT INTO model_suggestions(id, run_id, segment_id, theme_id, bertopic_id, score) VALUES (?, ?, ?, ?, ?, ?)",
                          (str(uuid4()), run_id, passage.id, mapping[topic], topic, score))
@@ -131,23 +248,16 @@ def save_result(directory, unit, document_ids, passages, settings, output, shoul
 
 
 def list_analysis_runs(directory):
+    """Completed runs, newest first: (id, completed_at, settings_json)."""
     with connect(directory) as conn:
         return conn.execute("SELECT id, completed_at, settings_json FROM analysis_runs WHERE status='completed' ORDER BY completed_at DESC, rowid DESC").fetchall()
 
 
-def download_embedding_model(directory, settings=None):
-    """Explicit one-time setup action; Analyze always loads weights offline."""
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError as exc:
-        raise ValueError('Install analysis dependencies: pip install -e ".[analysis,test]"') from exc
-    settings = settings or AnalysisSettings()
-    SentenceTransformer(settings.embedding_model, revision=settings.embedding_revision,
-                        cache_folder=str(Path(directory)/"models"/"weights"), device="cpu")
-
-
 def apply_topic_goal(model, texts, target, progress):
-    """Reduce only; translate a researcher goal that excludes Uncategorized."""
+    """Reduce only; translate a researcher goal that excludes Uncategorized.
+
+    Returns the topic count before reduction. Never increases the topic count.
+    """
     discovery_count = len(set(model.topics_) - {-1})
     if target is not None and target < discovery_count:
         progress(f"Reducing {discovery_count} discovered themes toward {target}…")
@@ -156,11 +266,20 @@ def apply_topic_goal(model, texts, target, progress):
 
 
 def fit_bertopic(passages, settings, directory, progress, should_cancel):
+    """Default backend: embed passages and find topics with BERTopic.
+
+    Pre: validate_settings() passes; the bundled embedding model is available
+    (otherwise ValueError with the Check & repair message).
+    Post: TopicOutput with model_info recording package versions, model
+    identity, timings and cache use. Embeddings are cached under
+    <project>/models/embeddings/<model-identity-hash>/ and reused next time.
+    Cancellation is checked between steps; HDBSCAN itself can't be interrupted.
+    """
+    initialization_started = perf_counter()
     validate_settings(settings, len(passages))
     try:
         import numpy as np
         from bertopic import BERTopic
-        from sentence_transformers import SentenceTransformer
         from umap import UMAP
         from hdbscan import HDBSCAN
         from sklearn.feature_extraction.text import CountVectorizer, ENGLISH_STOP_WORDS
@@ -170,11 +289,20 @@ def fit_bertopic(passages, settings, directory, progress, should_cancel):
     if not any(vectorizer.build_analyzer()(p.text) for p in passages):
         raise ValueError("No usable keywords remain. Remove some ignored words or choose text with more vocabulary.")
     progress("Loading local embedding model…")
-    try:
-        encoder = SentenceTransformer(settings.embedding_model, revision=settings.embedding_revision,
-                                      cache_folder=str(directory/"models"/"weights"), local_files_only=True, device="cpu")
-    except Exception as exc:
-        raise ValueError("Embedding model is not available locally. Use Download model once while online, then retry Analyze.") from exc
+    timings = {'backend_initialization_seconds': perf_counter() - initialization_started}
+    stage_started = perf_counter()
+    from qualitative_themes.analysis.encoder import load_encoder
+    encoder = load_encoder(settings, directory)
+    timings['encoder_load_seconds'] = perf_counter() - stage_started
+    stage_started = perf_counter()
+    # Check even legacy passage modes against the encoder actually being used.
+    # Test/injected embedding providers may not expose a tokenizer.
+    if getattr(encoder, 'tokenizer', None) is not None:
+        oversized = sum(len(encoder.tokenizer.encode(p.text, add_special_tokens=True,
+                        truncation=False, verbose=False)) > encoder.max_seq_length for p in passages)
+        if oversized and not settings.allow_truncation:
+            raise ValueError(f'{oversized} passages exceed the model token limit. Choose Automatic passages '
+                             'or explicitly allow truncation in Analysis Setup.')
     identity = {"model": settings.embedding_model, "revision": settings.embedding_revision,
                 "sentence_transformers": version("sentence-transformers"), "normalize_embeddings": True,
                 "max_seq_length": encoder.max_seq_length}
@@ -184,7 +312,10 @@ def fit_bertopic(passages, settings, directory, progress, should_cancel):
     vectors = {}
     texts = list(dict.fromkeys(p.text for p in passages))
     missing = []
+    timings['token_guard_and_cache_setup_seconds'] = perf_counter() - stage_started
+    stage_started = perf_counter()
     for text in texts:
+        check_cancel(should_cancel)
         key = hashlib.sha256(text.encode()).hexdigest()
         path = cache/f"{key}.npy"
         try:
@@ -194,19 +325,22 @@ def fit_bertopic(passages, settings, directory, progress, should_cancel):
             vectors[text] = vector
         except (OSError, ValueError):
             missing.append(text)
-    for offset in range(0, len(missing), settings.batch_size):
-        check_cancel(should_cancel)
-        batch = missing[offset:offset+settings.batch_size]
-        progress(f"Embedding passages: {min(offset+len(batch), len(missing))}/{len(missing)} new texts…")
-        values = encoder.encode(batch, batch_size=settings.batch_size, normalize_embeddings=True,
-                                convert_to_numpy=True, show_progress_bar=False)
-        for text, vector in zip(batch, values):
-            vectors[text] = vector
-            path = cache/f"{hashlib.sha256(text.encode()).hexdigest()}.npy"
-            temp = path.with_suffix(f".{uuid4().hex}.tmp")
-            with temp.open("wb") as stream:
-                np.save(stream, vector, allow_pickle=False)
-            temp.replace(path)
+    from qualitative_themes.analysis.encoder import encode_texts
+    timings['cache_read_seconds'] = perf_counter() - stage_started
+    reused = len(vectors)
+    stage_started = perf_counter()
+    if len(vectors):
+        progress(f"Reusing {len(vectors):,} cached passage embeddings.")
+    for text, vector in encode_texts(encoder, missing, settings, progress,
+                                     lambda: bool(should_cancel and should_cancel())):
+        vectors[text] = vector
+        path = cache/f"{hashlib.sha256(text.encode()).hexdigest()}.npy"
+        temp = path.with_suffix(f".{uuid4().hex}.tmp")
+        with temp.open("wb") as stream:
+            np.save(stream, vector, allow_pickle=False)
+        temp.replace(path)
+    timings['embedding_and_cache_write_seconds'] = perf_counter() - stage_started
+    stage_started = perf_counter()
     embeddings = np.stack([vectors[p.text] for p in passages])
     from qualitative_themes.analysis.methods import guided_seed_topics, zero_shot_partition, restore_partition_keywords
 
@@ -240,8 +374,8 @@ def fit_bertopic(passages, settings, directory, progress, should_cancel):
     check_cancel(should_cancel)
     if settings.analysis_method == "zero_shot":
         progress("Matching passages to predefined topic descriptions…")
-        categories = encoder.encode([text for _, text in settings.topic_definitions],
-            batch_size=settings.batch_size, normalize_embeddings=True, convert_to_numpy=True, show_progress_bar=False)
+        categories = np.stack([vector for _, vector in encode_texts(
+            encoder, [text for _, text in settings.topic_definitions], settings, should_cancel=should_cancel)])
         check_cancel(should_cancel)
         topics, method_info = zero_shot_partition(passages, embeddings, categories, settings, discover,
                                                  lambda: check_cancel(should_cancel))
@@ -261,7 +395,9 @@ def fit_bertopic(passages, settings, directory, progress, should_cancel):
             packages[package] = version(package)
         except PackageNotFoundError:
             packages[package] = "unknown"
-    output.model_info.update({"packages": packages, "embedding_identity": identity, "device": "cpu",
+    timings['topic_processing_seconds'] = perf_counter() - stage_started
+    output.model_info.update({"packages": packages, "embedding_identity": identity, "device": str(getattr(encoder, 'device', 'unknown')),
+        "stage_timings": timings, "embedding_cache": {"reused": reused, "computed": len(missing)},
         "analysis_method": settings.analysis_method,
         "reduction_note": ("Automatic reduction disabled for predefined categories." if settings.analysis_method == "zero_shot" else
                            "Requested count is a reduction goal; creating more themes requires a new discovery run." if settings.requested_theme_count else

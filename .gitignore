@@ -34,3 +34,19 @@ dist/
 Thumbs.db
 
 
+
+# Build outputs and bundled resources (fetched by scripts/fetch_resources.py)
+/resources/
+/dist/
+/build/
+*.tmtpack
+
+
+# Local-only notes, benchmarks and helper scripts
+/docs/FOUNDATION_PLAN.md
+/docs/LOCAL_RELEASE_HANDOFF.md
+/docs/benchmarks/
+/scripts/benchmark_*.py
+/scripts/export_source_snapshot.py
+/CHANGELOG.md
+/.python-version

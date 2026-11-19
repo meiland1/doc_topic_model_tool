@@ -6,10 +6,15 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPu
     QLabel, QTabWidget, QPlainTextEdit, QSplitter, QListWidget, QListWidgetItem)
 from qualitative_themes.analysis.topics import AnalysisCancelled, list_analysis_runs
 from qualitative_themes.analysis.visualizations import build_visualizations
+from qualitative_themes.analysis import view_cache
 from qualitative_themes.storage.history import analysis_title
 
 
-class VisualizationWorker(QThread):
+from qualitative_themes.gui.worker import WorkerThread
+
+
+class VisualizationWorker(WorkerThread):
+    """Build the plots for a run in the background. result(dict from build_visualizations)."""
     progress = Signal(str)
     result = Signal(object)
     failed = Signal(str)
@@ -32,6 +37,12 @@ class VisualizationWorker(QThread):
 
 
 class VisualizationTab(QWidget):
+    """Shows saved views (view_cache) and asks MainWindow to rebuild them.
+
+    The tab emits build_requested / cancel_requested; MainWindow runs the
+    worker in its shared task slot. evidence_requested opens passages in the
+    workspace.
+    """
     build_requested = Signal()
     cancel_requested = Signal()
     evidence_requested = Signal(str, str)
@@ -121,7 +132,9 @@ class VisualizationTab(QWidget):
         index = self.run_choice.findData(selected)
         self.run_choice.setCurrentIndex(max(0,index))
         self.run_choice.blockSignals(False)
-        self.invalidate()
+        # Keep views on screen when nothing changed (e.g. just switching back to this tab).
+        if self.run_choice.currentData() != getattr(self, '_shown_run', None) or self.result_data is None:
+            self.invalidate()
 
     def set_busy(self, busy):
         self.run_choice.setEnabled(not busy)
@@ -141,8 +154,29 @@ class VisualizationTab(QWidget):
                 self.viewers[key].setUrl(QUrl('about:blank'))
             message.setText('Build visualizations to see this view.')
             message.show()
+        self._shown_run = self.run_choice.currentData()
         self.status.setText('Ready to build the selected analysis.' if self.run_choice.currentData() else 'No completed analyses are available.')
         self.build_button.setEnabled(bool(self.run_choice.currentData()))
+        self.show_saved()
+
+    def show_saved(self):
+        """Open views saved for this analysis, if any, without rebuilding."""
+        run = self.run_choice.currentData()
+        if not self.directory or not run:
+            return False
+        try:
+            saved = view_cache.load_views(self.directory, run)
+        except Exception:
+            saved = None
+        if not saved:
+            return False
+        self.show_views(saved['paths'], saved)
+        when = saved['built_at'][:16].replace('T', ' ')
+        self.status.setText((f'Showing views saved {when} UTC. ' if when else 'Showing saved views. ') +
+                            ('They match the current coding.' if saved['current'] else
+                             'Coding has changed since then — choose Build / Refresh to update them.')
+                            + (' ' + ' '.join(saved['notes']) if saved.get('notes') else ''))
+        return True
 
     def _viewer(self, key):
         if key in self.viewers:
@@ -167,11 +201,27 @@ class VisualizationTab(QWidget):
         return viewer
 
     def display_result(self, result):
-        self.result_data = result
-        for key, (page, layout, message) in self.pages.items():
-            if key in result['html']:
+        run = self.run_choice.currentData()
+        paths = {}
+        try:
+            folder = view_cache.save_views(self.directory, run, result)
+            paths = {key: folder/f'{key}.html' for key in result['html']}
+        except Exception:
+            for key, content in result['html'].items():
                 path = Path(self._temporary.name)/(key+'.html')
-                path.write_text(result['html'][key], encoding='utf-8')
+                path.write_text(content, encoding='utf-8')
+                paths[key] = path
+        self.show_views(paths, result)
+        self.status.setText('Built from current effective coding and saved with the project, so it reopens instantly. '
+            'Map uses a 2D PCA projection of local embeddings; heatmap and hierarchy use rebuilt c-TF-IDF. '
+            'No saved coding or theme assignments were changed.' + (' ' + ' '.join(result['notes']) if result.get('notes') else ''))
+
+    def show_views(self, paths, result):
+        self.result_data = result
+        self._shown_run = self.run_choice.currentData()
+        for key, (page, layout, message) in self.pages.items():
+            if key in paths:
+                path = paths[key]
                 try:
                     viewer = self._viewer(key)
                     viewer.load(QUrl.fromLocalFile(str(path)))
@@ -189,8 +239,6 @@ class VisualizationTab(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, tid)
             self.themes.addItem(item)
         if self.themes.count(): self.themes.setCurrentRow(0)
-        self.status.setText('Built from current effective coding. Map uses a 2D PCA projection of local embeddings; '
-            'heatmap and hierarchy use rebuilt c-TF-IDF. No saved coding or theme assignments were changed.')
 
     def select_theme(self, item, _previous=None):
         self.evidence_button.setEnabled(bool(item))

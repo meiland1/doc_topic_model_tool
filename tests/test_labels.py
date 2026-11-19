@@ -131,6 +131,17 @@ class LabelingTests(unittest.TestCase):
         self.assertEqual(sum(r["status"] == "protected" for r in attempt["records"]), 1)
         self.assertEqual(sum(r["status"] == "skipped_merged" for r in attempt["records"]), 1)
 
+    def test_description_changed_during_request_is_preserved(self):
+        def edit():
+            with connect(self.directory) as conn:
+                conn.execute('UPDATE themes SET description=? WHERE id=?',
+                             ('Researcher definition', self.mapping['0']))
+        attempt = self.label(MockClient(on_post=edit))
+        self.assertEqual(next(r['status'] for r in attempt['records'] if r['topic_id'] == 0), 'protected')
+        with connect(self.directory) as conn:
+            self.assertEqual(conn.execute('SELECT description FROM themes WHERE id=?',
+                                         (self.mapping['0'],)).fetchone()[0], 'Researcher definition')
+
     def test_cancellation_does_not_publish_partial_names(self):
         calls = []
         def cancel():
@@ -147,6 +158,41 @@ class LabelingTests(unittest.TestCase):
                                    {"name": "remote", "remote_host": "https://example.com"}])
         self.assertEqual([m["name"] for m in list_local_models(lambda: client)], ["local:small"])
         self.assertTrue(client.closed)
+
+    def test_large_run_skips_automatic_naming_without_contacting_engine(self):
+        with connect(self.directory) as conn:
+            info = json.loads(conn.execute('SELECT model_info_json FROM analysis_runs WHERE id=?', (self.run,)).fetchone()[0])
+            info['topic_theme_map'] = {str(i): str(i) for i in range(601)}
+            conn.execute('UPDATE analysis_runs SET model_info_json=? WHERE id=?', (json.dumps(info), self.run))
+        def forbidden():
+            self.fail('Large automatic run must not contact Ollama')
+        messages = []
+        attempt = label_run(self.directory, self.run, 'local:small', client_factory=forbidden,
+                            max_themes=50, progress=messages.append)
+        self.assertEqual(attempt['status'], 'skipped_large_run')
+        self.assertIn('601', messages[0])
+
+    def test_cancel_during_final_write_releases_lock_and_can_retry(self):
+        from contextlib import contextmanager
+        from unittest.mock import patch
+        cancelled = [False]
+        @contextmanager
+        def traced(directory):
+            with connect(directory) as conn:
+                def trace(sql):
+                    if sql.startswith('UPDATE themes SET generated_label='):
+                        cancelled[0] = True
+                conn.set_trace_callback(trace)
+                yield conn
+        with patch('qualitative_themes.analysis.labels.connect', traced):
+            with self.assertRaises(AnalysisCancelled):
+                label_run(self.directory, self.run, 'local:small', client_factory=lambda: MockClient(),
+                          should_cancel=lambda: cancelled[0])
+        self.assertEqual(self.name(0), 'Theme 1: access')
+        with connect(self.directory) as conn:
+            conn.execute('BEGIN IMMEDIATE')  # No abandoned write lock remains.
+        attempt = self.label(MockClient())
+        self.assertTrue(any(r['status'] == 'generated' for r in attempt['records']))
 
     def test_invalid_json_http_error_and_description_limits(self):
         self.label(MockClient([Reply({"done": True, "response": "not JSON"}), Reply({}, 500)]))

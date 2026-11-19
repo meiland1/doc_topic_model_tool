@@ -13,7 +13,15 @@ from qualitative_themes.analysis.settings import parse_ignored_words
 from qualitative_themes.analysis.topics import AnalysisCancelled
 
 
-class RefinementWorker(QThread):
+from qualitative_themes.gui.worker import WorkerThread
+
+
+class RefinementWorker(WorkerThread):
+    """Build a refinement proposal in the background.
+
+    If cancelled after the proposal was created, the proposal is cancelled too
+    so nothing half-reviewed is left behind.
+    """
     progress = Signal(str)
     result = Signal(str, int)
     failed = Signal(str)
@@ -40,6 +48,7 @@ class RefinementWorker(QThread):
 
 
 class RefinementSetupDialog(QDialog):
+    """Choose a refinement operation and its options."""
     def __init__(self, source, models=(), parent=None, operation=None):
         super().__init__(parent)
         self.source = source
@@ -122,6 +131,7 @@ class RefinementSetupDialog(QDialog):
 
 
 class RefinementReviewDialog(QDialog):
+    """Map each proposed theme to an existing theme identity (or a new one), then Apply."""
     def __init__(self, directory, proposal_id, parent=None):
         super().__init__(parent)
         self.directory, self.proposal_id = directory, proposal_id

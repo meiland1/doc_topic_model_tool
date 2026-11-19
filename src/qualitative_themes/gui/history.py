@@ -10,7 +10,11 @@ from qualitative_themes.export.research import write_codebook, write_coded_passa
 from qualitative_themes.storage.history import analysis_details, history_events, history_runs
 
 
-class ResearchExportWorker(QThread):
+from qualitative_themes.gui.worker import WorkerThread
+
+
+class ResearchExportWorker(WorkerThread):
+    """Write a codebook or coded-passages export. result(path, count) on success."""
     progress = Signal(str)
     result = Signal(str, int)
     failed = Signal(str)
@@ -35,6 +39,7 @@ class ResearchExportWorker(QThread):
 
 
 class AnalysisHistoryDialog(QDialog):
+    """Paged list of runs and audit events, read from storage/history.py."""
     def __init__(self, directory, parent=None):
         super().__init__(parent)
         self.directory = directory

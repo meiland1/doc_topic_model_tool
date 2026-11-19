@@ -17,6 +17,11 @@ STYLE_HELP = {
 }
 
 
+# Theme-naming model preselected when it is installed. The release kit ships it as a
+# model pack; any other installed model can still be chosen.
+DEFAULT_NAMING_MODEL = "llama3.1:8b"
+
+
 ANALYSIS_METHODS = {
     "general": "General discovery",
     "guided": "Guided discovery",
@@ -25,7 +30,11 @@ ANALYSIS_METHODS = {
 
 
 def parse_topic_definitions(text):
-    """One Name | matching words or description per line; preserve phrases."""
+    """One Name | matching words or description per line; preserve phrases.
+
+    Returns ((name, text), ...). Blank lines are skipped; raises ValueError on a
+    line without '|'. Content is checked later by validate_method_settings().
+    """
     definitions = []
     for line in text.splitlines():
         if not line.strip():
@@ -39,6 +48,12 @@ def parse_topic_definitions(text):
 
 @dataclass(frozen=True)
 class AnalysisSettings:
+    """Every option for one analysis run. Frozen; use dataclasses.replace() to change.
+
+    The whole thing is saved as JSON with each run (asdict), so adding a field
+    is backwards compatible as long as it has a default. settings_from_dict()
+    ignores keys it doesn't know.
+    """
     analysis_method: str = "general"
     topic_definitions: tuple[tuple[str, str], ...] = ()
     zeroshot_min_similarity: float = 0.7
@@ -55,10 +70,18 @@ class AnalysisSettings:
     ignored_words: tuple[str, ...] = ()
     ngram_range: tuple[int, int] = (1, 2)
     name_themes: bool = False
+    allow_truncation: bool = False
+    semantic_threshold: float = 0.65
+    semantic_min_tokens: int = 128
     ollama_model: str | None = None
+    # Leave interviewer turns out of model input (source text and offsets are unchanged).
+    exclude_interviewer: bool = False
+    # Normalized speaker labels treated as the interviewer (empty = the known defaults).
+    interviewer_labels: tuple = ()
 
 
 def preset_settings(style, **overrides):
+    """Settings for a named style (Balanced/Broad/...), with any field overridden."""
     if style not in PRESETS:
         raise ValueError("Choose a supported analysis style.")
     return AnalysisSettings(analysis_style=style, **{**PRESETS[style], **overrides})
@@ -72,9 +95,10 @@ def parse_ignored_words(text):
 
 
 def settings_from_dict(values):
+    """Rebuild settings from saved JSON. Unknown keys are dropped; lists become tuples."""
     allowed = {field.name for field in fields(AnalysisSettings)}
     options = {key: value for key, value in values.items() if key in allowed}
-    for name in ("ignored_words", "ngram_range"):
+    for name in ("ignored_words", "ngram_range", "interviewer_labels"):
         if name in options:
             options[name] = tuple(options[name])
     if "topic_definitions" in options:
@@ -83,6 +107,7 @@ def settings_from_dict(values):
 
 
 def validate_method_settings(settings):
+    """Raise ValueError (researcher-facing message) if the method/topic setup is invalid."""
     if settings.analysis_method not in ANALYSIS_METHODS:
         raise ValueError("Choose a supported analysis method.")
     score = settings.zeroshot_min_similarity
@@ -111,6 +136,18 @@ def validate_method_settings(settings):
 
 
 def validate_settings(settings, count):
+    """Full check before fitting. `count` is the number of prepared passages.
+
+    Pre: called after passages are prepared so the minimum-size checks are real.
+    Post: returns None, or raises ValueError with what to change.
+    """
+    if type(settings.semantic_min_tokens) is not int or not 0 <= settings.semantic_min_tokens <= 4096:
+        raise ValueError('Semantic minimum passage target must be between 0 and 4096 tokens.')
+    if (isinstance(settings.semantic_threshold, bool) or not isinstance(settings.semantic_threshold, (int, float))
+            or not math.isfinite(settings.semantic_threshold) or not 0 <= settings.semantic_threshold <= 1):
+        raise ValueError('Semantic boundary sensitivity must be between 0 and 1.')
+    if type(settings.allow_truncation) is not bool:
+        raise ValueError('Choose whether to allow truncation of oversized passages.')
     validate_method_settings(settings)
     if any(type(getattr(settings, name)) is not int for name in
            ("min_topic_size", "batch_size", "min_samples", "n_neighbors", "seed")):
@@ -136,6 +173,7 @@ def validate_settings(settings, count):
 
 
 def small_corpus_warning(settings, count):
+    """A warning string for small corpora, or '' when the corpus is big enough."""
     if count < max(10, settings.min_topic_size * 2):
         return (f"Small corpus: {count} passages. Analysis can run, but may find few themes "
                 "or leave passages Uncategorized. Treat names and groups as preliminary.")
@@ -148,6 +186,10 @@ def vectorizer_options(settings, english_words):
 
 
 def effective_parameters(settings, count):
+    """UMAP/HDBSCAN/vectorizer parameters as actually used for `count` passages.
+
+    Saved with each run so the exact configuration can be reported later.
+    """
     if settings.analysis_method == "zero_shot":
         return {"matching": {"metric": "cosine", "minimum_similarity": settings.zeroshot_min_similarity,
                              "assignment": "single best matching description"},

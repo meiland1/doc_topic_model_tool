@@ -9,11 +9,26 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class TextCoordinates:
+    """Offset map between stored text and what a QTextDocument shows.
+
+    Stored ranges (codings, comments, segments) always use canonical offsets,
+    i.e. Python str indices into documents.canonical_text. Only convert at
+    the widget boundary.
+    """
     display_text: str
     canonical_to_qt: tuple[int, ...]
 
     @classmethod
     def build(cls, canonical: str) -> "TextCoordinates":
+        # Fast path: no separators Qt rewrites and no characters outside the BMP,
+        # so source offsets and Qt positions are identical.
+        """Pre: `canonical` is the exact stored text.
+        Post: display_text is safe to hand to Qt, and canonical_to_qt has
+        len(canonical) + 1 entries, one per source boundary.
+        """
+        if (not any(mark in canonical for mark in ("\r", "\f", "\u2028", "\u2029"))
+                and len(canonical.encode("utf-16-le")) == 2 * len(canonical)):
+            return cls(canonical, tuple(range(len(canonical) + 1)))
         out: list[str] = []
         positions = [0]
         qt = 0
@@ -39,11 +54,17 @@ class TextCoordinates:
         return cls("".join(out), tuple(positions))
 
     def qt_range(self, start: int, end: int) -> tuple[int, int]:
+        """Canonical [start, end) -> Qt positions. Raises ValueError if out of range."""
         if not 0 <= start < end < len(self.canonical_to_qt):
             raise ValueError("Source range is outside the document")
         return self.canonical_to_qt[start], self.canonical_to_qt[end]
 
     def canonical_range(self, qt_start: int, qt_end: int) -> tuple[int, int]:
+        """Qt selection -> canonical [start, end).
+
+        Raises ValueError when the selection is empty, out of range, or lands
+        between two source characters (e.g. inside a collapsed CRLF).
+        """
         if not 0 <= qt_start < qt_end <= self.canonical_to_qt[-1]:
             raise ValueError("Qt selection is outside the document")
         # Qt never places the cursor inside an emoji surrogate pair. At a

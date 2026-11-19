@@ -9,6 +9,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class SourceSpan:
+    """[start_char, end_char) of one page (PDF) or paragraph/table row (DOCX) in the extracted text."""
     start_char: int
     end_char: int
     page_number: int | None = None
@@ -17,6 +18,7 @@ class SourceSpan:
 
 @dataclass(frozen=True)
 class ExtractedDocument:
+    """Text exactly as it will be stored, its spans, and warnings to show after import."""
     text: str
     spans: tuple[SourceSpan, ...]
     warnings: tuple[str, ...] = ()
@@ -24,6 +26,7 @@ class ExtractedDocument:
 
 
 class _TextBuilder:
+    """Joins pieces with separators and records each piece's span. Blank pieces are skipped."""
     def __init__(self):
         self.parts: list[str] = []
         self.length = 0
@@ -45,24 +48,36 @@ class _TextBuilder:
         return ExtractedDocument("".join(self.parts), tuple(self.spans), **kwargs)
 
 
+SCANNED_PAGE_WORDS = 10
+
+
 def _pdf(path: Path) -> ExtractedDocument:
+    """Text per page, pages joined by a form feed. Raises ValueError for locked or image-only PDFs."""
     import pymupdf
 
     builder = _TextBuilder()
+    sparse_pages = 0
     with pymupdf.open(path) as pdf:
         if pdf.needs_pass:
             raise ValueError("This PDF is password protected. Unlock it before importing.")
+        page_count = len(pdf)
         for number, page in enumerate(pdf, start=1):
             # This is a reading-order approximation, not a map of PDF glyph coordinates.
-            builder.add(page.get_text("text", sort=True), "\n\f\n", page=number)
+            text = page.get_text("text", sort=True)
+            if len(text.split()) < SCANNED_PAGE_WORDS:
+                sparse_pages += 1
+            builder.add(text, "\n\f\n", page=number)
         if not builder.spans:
-            raise ValueError("No readable text was found. This PDF may need OCR.")
-    return builder.finish(warnings=(
-        "PDF text order may differ from the visual page layout; check the preview, especially for columns or tables.",
-    ))
+            raise ValueError("No readable text was found. This PDF looks scanned and needs OCR before import.")
+    warnings = ["PDF text order may differ from the visual page layout; check the preview, especially for columns or tables."]
+    if page_count and sparse_pages / page_count >= 0.5:
+        warnings.insert(0, f"{sparse_pages} of {page_count} pages have almost no text. They may be scanned images "
+                           "that need OCR; only the readable text was imported.")
+    return builder.finish(warnings=tuple(warnings))
 
 
 def _docx(path: Path) -> ExtractedDocument:
+    """Body paragraphs and table rows in document order. Headers, footers and text boxes are skipped."""
     from docx import Document
     from docx.table import Table
     from docx.text.paragraph import Paragraph
@@ -87,6 +102,7 @@ def _docx(path: Path) -> ExtractedDocument:
 
 
 def _txt(path: Path) -> ExtractedDocument:
+    """Decode as UTF-16 (with BOM), UTF-8, or Windows-1252, in that order. Text is not normalized."""
     data = path.read_bytes()
     warning = ()
     if data.startswith((b"\xff\xfe", b"\xfe\xff")):
@@ -104,6 +120,12 @@ def _txt(path: Path) -> ExtractedDocument:
 
 
 def extract_document(path: Path) -> ExtractedDocument:
+    """Extract text for import. Doesn't touch the project.
+
+    Pre: `path` is an existing .pdf, .docx or .txt file.
+    Post: every span is a non-empty range inside `text`. Raises ValueError with
+    a message meant for researchers when nothing readable is found.
+    """
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(path)
