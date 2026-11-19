@@ -18,6 +18,10 @@ def method_label(settings, manual=False):
 
 
 def topic_provenance(settings, info, topic):
+    """Where one BERTopic topic came from: {'origins': [...], 'supplied_names': [...]}.
+
+    Prefers what the run stored; reconstructs it for older runs.
+    """
     key = str(topic)
     stored = info.get('topic_provenance', {}).get(key)
     if stored:
@@ -41,6 +45,7 @@ def origin_text(provenance):
 
 
 def theme_provenance_from_connection(conn, theme_id, run_id=None):
+    """Origins of a theme within a run (merged themes combine their topics' origins)."""
     row = conn.execute('SELECT creation_source FROM themes WHERE id=?', (theme_id,)).fetchone()
     if run_id:
         saved = conn.execute('SELECT settings_json,model_info_json FROM analysis_runs WHERE id=?', (run_id,)).fetchone()
@@ -58,6 +63,7 @@ def theme_provenance(directory, theme_id, run_id=None):
 
 
 def method_summary(settings, info):
+    """Multi-line description of the method used, for run details and exports."""
     lines = ['Analysis method: ' + method_label(settings)]
     method = settings.get('analysis_method', 'general')
     if method in {'guided', 'zero_shot'}:

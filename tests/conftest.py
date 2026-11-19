@@ -4,6 +4,9 @@ import os
 import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+# Keep app-level data (recent projects, engine models) out of the developer's real profile.
+import tempfile
+os.environ.setdefault('DOC_TOPIC_MODEL_APP_DATA', tempfile.mkdtemp(prefix='tmt-test-appdata-'))
 
 
 def _dispose_test_windows(app):

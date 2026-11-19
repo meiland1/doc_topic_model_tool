@@ -4,7 +4,12 @@ from qualitative_themes.storage.coding import effective_assignments_from_connect
 
 
 def navigation_groups(directory, theme_ids, document_ids, run_id=None):
-    """One source snapshot; retain short previews rather than full corpus text."""
+    """One source snapshot; retain short previews rather than full corpus text.
+
+    Returns {(theme_id, document_id): [(assignment_id, document_id, name, start, end, preview)]}
+    sorted by position. Uses the same precedence rules as the coding workspace
+    (see coding.effective_assignments_from_connection).
+    """
     groups = {}
     with connect(directory) as conn:
         conn.execute('BEGIN')

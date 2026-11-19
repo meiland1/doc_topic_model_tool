@@ -1,29 +1,51 @@
-"""Optional bounded theme naming through the local Ollama HTTP API."""
+"""Optional bounded theme naming through the local Ollama HTTP API.
+
+Naming only ever replaces generated_label/description on model-created
+themes. Anything the researcher named, merged into, or a predefined
+category is 'protected' and left alone. If Ollama isn't running or a
+response is unusable, the theme keeps its keyword name ("fallback").
+"""
 from datetime import datetime, timezone
 import json
 from uuid import uuid4
 
-from qualitative_themes.analysis.topics import check_cancel
+from qualitative_themes.analysis.topics import check_cancel, AnalysisCancelled
 from qualitative_themes.storage.database import connect
 
-BASE_URL = "http://127.0.0.1:11434"
+from qualitative_themes.runtime.engine import SYSTEM_URL as BASE_URL, current_base_url
 TEMPLATE_VERSION = "qualitative-theme-label-v1"
+AUTO_NAMING_LIMIT = 100
 SCHEMA = {"type": "object", "properties": {
     "label": {"type": "string", "minLength": 1, "maxLength": 80},
     "description": {"type": "string", "maxLength": 400}},
     "required": ["label"], "additionalProperties": False}
 
 
+# Generous read timeout: an 8B model on a CPU-only laptop can take a minute to load
+# and another minute to answer the first request.
+READ_TIMEOUT_SECONDS = 180.0
+
+
 def local_client():
+    """httpx client for whatever engine current_base_url() points at.
+
+    That's the app's own engine once started, otherwise a system Ollama on
+    127.0.0.1:11434. trust_env=False keeps proxy settings from routing it off
+    the machine.
+    """
     try:
         import httpx
     except ImportError as exc:
         raise ValueError('Install labeling dependencies: pip install -e ".[analysis,test]"') from exc
-    return httpx.Client(base_url=BASE_URL, trust_env=False, follow_redirects=False,
-                        timeout=httpx.Timeout(90.0, connect=3.0, pool=3.0, write=5.0))
+    return httpx.Client(base_url=current_base_url(), trust_env=False, follow_redirects=False,
+                        timeout=httpx.Timeout(READ_TIMEOUT_SECONDS, connect=3.0, pool=3.0, write=5.0))
 
 
 def models_from_client(client):
+    """Installed local models as [{'name', 'digest', 'details'}]. Cloud/remote models are skipped.
+
+    Raises (httpx error or ValueError) if the engine can't be reached or replies oddly.
+    """
     response = client.get("/api/tags", timeout=3.0)
     response.raise_for_status()
     data = response.json()
@@ -43,11 +65,15 @@ def models_from_client(client):
 
 
 def list_local_models(client_factory=None):
+    """Same as models_from_client() on a fresh client. Callers handle the exception
+    when the engine is down (the GUI shows keyword naming only).
+    """
     with (client_factory or local_client)() as client:
         return models_from_client(client)
 
 
 def validate_label(value):
+    """Parse the model's JSON reply into (label, description) or raise ValueError."""
     if not isinstance(value, dict) or set(value) - {"label", "description"}:
         raise ValueError("Ollama did not return the expected label JSON.")
     label, description = value.get("label"), value.get("description", "")
@@ -61,6 +87,7 @@ def validate_label(value):
 
 
 def build_prompt(keywords, excerpts):
+    """Prompt from a theme's top keywords and up to three excerpts."""
     evidence = {"keywords": [str(word)[:70] for word, _ in keywords[:10]],
                 "representative_passages": [" ".join(text.split())[:800] for text in excerpts[:3]]}
     return ("Name this qualitative research theme using the evidence below. "
@@ -70,6 +97,7 @@ def build_prompt(keywords, excerpts):
 
 
 def _protected(conn, theme, proposal=False):
+    """Why a theme must not be renamed ('protected', 'skipped_merged'), or None if it may be."""
     row = conn.execute("SELECT user_label, status, creation_source FROM themes WHERE id=?", (theme,)).fetchone()
     if not row or row[1] != ("proposed" if proposal else "active"):
         return "skipped_merged"
@@ -81,8 +109,17 @@ def _protected(conn, theme, proposal=False):
     return None
 
 
-def label_run(directory, run_id, model_name, progress=None, should_cancel=None, client_factory=None, proposal=False):
-    """Retain analysis on failure; publish one complete labeling attempt atomically."""
+def label_run(directory, run_id, model_name, progress=None, should_cancel=None, client_factory=None, proposal=False,
+              max_themes=None):
+    """Retain analysis on failure; publish one complete labeling attempt atomically.
+
+    Pre: a completed run (or a 'proposed' run when proposal=True).
+    Post: themes that aren't protected get a name (or keep their keyword name),
+    and the attempt is appended to model_info['labeling_attempts'] with one
+    record per theme. The protection check is repeated inside the final write
+    transaction, so a researcher rename made while naming was running wins.
+    Slow (one model call per theme): run in a worker thread.
+    """
     progress = progress or (lambda text: None)
     check_cancel(should_cancel)
     with connect(directory) as conn:
@@ -91,25 +128,37 @@ def label_run(directory, run_id, model_name, progress=None, should_cancel=None, 
             raise ValueError("Select a completed analysis to name its themes.")
         info = json.loads(row[0])
         mapping = info.get("topic_theme_map", {})
+        theme_count = sum(int(topic) != -1 for topic in mapping)
+        if max_themes is not None and theme_count > max_themes:
+            progress(f'Analysis saved with {theme_count} topics. Automatic naming skipped above {max_themes} topics; '
+                     'keyword names are available. Review or reduce the topics before requesting names.')
+            return {'status': 'skipped_large_run', 'theme_count': theme_count, 'records': []}
         jobs = []
         for topic, theme in sorted(mapping.items(), key=lambda item: int(item[0])):
+            check_cancel(should_cancel)
             protection = _protected(conn, theme, proposal)
             if str(topic) in info.get("predefined_topic_labels", {}):
                 protection = protection or "protected"
             keywords = info.get("keywords", {}).get(topic, [])
             fallback = ("Uncategorized" if int(topic) == -1 else
                         f"Theme {int(topic)+1}: " + (", ".join(str(word) for word, _ in keywords[:3]) or "Unnamed"))
-            references = info.get("representative_segment_ids", {}).get(topic, [])
+            references = list(dict.fromkeys(info.get("representative_segment_ids", {}).get(topic, [])))[:3]
             # Only actual suggestions in this run/topic; never read arbitrary files.
-            passages = conn.execute("""SELECT s.id, substr(d.canonical_text, s.start_char+1, s.end_char-s.start_char)
+            query = """SELECT s.id, substr(d.canonical_text, s.start_char+1, min(s.end_char-s.start_char, 2400))
                 FROM model_suggestions m JOIN segments s ON s.id=m.segment_id
-                JOIN documents d ON d.id=s.document_id WHERE m.run_id=? AND m.bertopic_id=?
-                ORDER BY s.document_id, s.ordinal""", (run_id, int(topic))).fetchall()
-            chosen = [text for sid, text in passages if sid in references][:3]
+                JOIN documents d ON d.id=s.document_id WHERE m.run_id=? AND m.bertopic_id=?"""
+            chosen = []
+            if not protection and int(topic) != -1 and references:
+                rows = conn.execute(query + ' AND s.id IN (' + ','.join('?' for _ in references)
+                                    + ') ORDER BY s.document_id, s.ordinal LIMIT 3',
+                                    (run_id, int(topic), *references)).fetchall()
+                chosen = [text for _, text in rows]
             if not chosen:
-                chosen = [text for _, text in passages[:3]]
+                chosen = ([text for _, text in conn.execute(query + ' ORDER BY s.document_id, s.ordinal LIMIT 3',
+                          (run_id, int(topic))).fetchall()] if not protection and int(topic) != -1 else [])
             jobs.append({"topic_id": int(topic), "theme_id": theme, "fallback_label": fallback,
-                         "protection": protection, "keywords": keywords, "excerpts": chosen})
+                         "protection": protection, "keywords": keywords, "excerpts": chosen,
+                         "original": conn.execute('SELECT generated_label, description FROM themes WHERE id=?', (theme,)).fetchone()})
     records, selected, service_error = [], None, None
     client = None
     try:
@@ -119,7 +168,7 @@ def label_run(directory, run_id, model_name, progress=None, should_cancel=None, 
                 models = models_from_client(client)
                 selected = next((m for m in models if m["name"] == model_name), None)
                 if selected is None:
-                    raise ValueError("Choose an installed local Ollama model under Advanced, then retry.")
+                    raise ValueError("Choose an installed theme-naming model in Settings, then retry.")
             except Exception as exc:
                 service_error = "Local Ollama unavailable: " + str(exc)[:250]
         for index, job in enumerate(jobs):
@@ -139,11 +188,14 @@ def label_run(directory, run_id, model_name, progress=None, should_cancel=None, 
                         "format": SCHEMA, "prompt": build_prompt(job["keywords"], job["excerpts"]),
                         "options": {"temperature": 0.1, "seed": 42, "num_predict": 160, "num_ctx": 4096}})
                     response.raise_for_status()
+                    check_cancel(should_cancel)
                     envelope = response.json()
                     if not isinstance(envelope, dict) or envelope.get("done") is not True or not isinstance(envelope.get("response"), str):
                         raise ValueError("Ollama returned an incomplete response.")
                     label, description = validate_label(json.loads(envelope["response"]))
                     record.update(status="generated", suggested_label=label, description=description)
+                except AnalysisCancelled:
+                    raise
                 except Exception as exc:
                     record.update(status="fallback", error=str(exc)[:300] or type(exc).__name__)
             records.append(record)
@@ -152,16 +204,24 @@ def label_run(directory, run_id, model_name, progress=None, should_cancel=None, 
             client.close()
     check_cancel(should_cancel)
     attempt = {"occurred_at": datetime.now(timezone.utc).isoformat(), "model": model_name,
-               "model_identity": selected, "endpoint": BASE_URL, "template_version": TEMPLATE_VERSION,
+               "model_identity": selected, "endpoint": current_base_url(), "template_version": TEMPLATE_VERSION,
                "temperature": 0.1, "seed": 42, "max_passages": 3, "max_passage_chars": 800,
-               "num_predict": 160, "num_ctx": 4096, "read_timeout_seconds": 90,
+               "num_predict": 160, "num_ctx": 4096, "read_timeout_seconds": READ_TIMEOUT_SECONDS,
                "records": records}
     with connect(directory) as conn:
+        check_cancel(should_cancel)
+        # Serialize the final protection check and update with researcher writes.
+        conn.execute('BEGIN IMMEDIATE')
         # Reload metadata so a concurrent human edit is preserved.
         current = json.loads(conn.execute("SELECT model_info_json FROM analysis_runs WHERE id=?", (run_id,)).fetchone()[0])
+        originals = {job['theme_id']: job['original'] for job in jobs}
         for record in records:
+            check_cancel(should_cancel)
             if record["status"] in {"generated", "fallback"}:
                 protection = _protected(conn, record["theme_id"], proposal)
+                original = originals[record['theme_id']]
+                if conn.execute('SELECT generated_label, description FROM themes WHERE id=?', (record['theme_id'],)).fetchone() != original:
+                    protection = protection or 'protected'
                 if protection:
                     record["status"] = protection
                     continue
@@ -177,6 +237,7 @@ def label_run(directory, run_id, model_name, progress=None, should_cancel=None, 
 
 
 def labeling_report(directory, run_id):
+    """Human-readable summary of the latest naming attempt for a run."""
     if not run_id:
         return "Manual coding only."
     with connect(directory) as conn:

@@ -1,8 +1,29 @@
-"""Three-panel source-text workspace with persistent manual seed codings."""
+"""Three-panel source-text workspace with persistent manual seed codings.
+
+Left: theme list and the theme/document navigation trees. Middle: the
+document viewer. Right: evidence list, notes and comments.
+
+State worth knowing before changing anything here:
+  directory, run_id   current project and analysis (run_id None = manual coding only)
+  doc_id, source_text the open document and its stored text
+  coords              TextCoordinates for source_text; convert every offset
+                      through it (canonical <-> Qt) and never use Qt
+                      positions as stored offsets
+  matches             effective assignments of the selected theme:
+                      (assignment_id, doc_id, doc_name, start, end, excerpt)
+  match_index         which of `matches` is selected (-1 = none)
+  _navigation         current scope: {'kind': 'theme'|'group'|'passage', ...}
+  _from_tree          True while a tree click drives select_theme(), so the
+                      scope set by the tree isn't overwritten
+
+Every write goes through storage/ (coding, comments, reading) and then
+reload_themes() or refresh_layers() redraws from the database. Nothing
+here keeps its own copy of research decisions.
+"""
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
+from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCharFormat, QTextCursor, QUndoCommand, QUndoStack
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QInputDialog, QLabel,
                                QListWidget, QListWidgetItem, QMessageBox,
                                QPlainTextEdit, QPushButton, QSplitter, QTextEdit,
@@ -24,18 +45,83 @@ from qualitative_themes.analysis.labels import labeling_report
 import json
 from qualitative_themes.storage.documents import get_document, list_documents
 from qualitative_themes.storage.navigation import navigation_groups
+from qualitative_themes.gui.viewer_parts import (FindBar, LayerHighlighter, MarkerStrip, SelectionToolbar,
+                                                 fill_color, theme_color)
+from qualitative_themes.gui.comments_panel import CommentsPanel
 
 
 class SourceViewer(QPlainTextEdit):
+    """Read-only text view that reports clicks, selections and number-key shortcuts.
+
+    number_pressed(n) fires for 1-9 while text is selected (quick-code with
+    the nth toolbar theme); clicked(qt_position) fires on a plain click.
+    """
     clicked = Signal(int)
+    number_pressed = Signal(int)
+    user_selected = Signal()
+
+    def keyReleaseEvent(self, event):
+        super().keyReleaseEvent(event)
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier and self.textCursor().hasSelection():
+            self.user_selected.emit()
+
+    def keyPressEvent(self, event):
+        text = event.text()
+        if text in "123456789" and text and self.textCursor().hasSelection() and not event.modifiers() & (
+                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.AltModifier):
+            self.number_pressed.emit(int(text))
+            return
+        super().keyPressEvent(event)
 
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
         if not self.textCursor().hasSelection():
             self.clicked.emit(self.textCursor().position())
+        else:
+            self.user_selected.emit()
+
+
+class AddCodingCommand(QUndoCommand):
+    """Undoable "code this selection as a theme".
+
+    redo() on the first push only saves; later redos (after an undo) also
+    reload the theme list. undo() marks the coding removed, it doesn't delete it.
+    """
+
+    def __init__(self, workspace, document_id, start, end, theme_id):
+        super().__init__("Code selection")
+        self.workspace, self.document_id, self.start, self.end, self.theme_id = workspace, document_id, start, end, theme_id
+        self.coding_id = None
+        self.error = None
+        self.first = True
+
+    def redo(self):
+        try:
+            self.coding_id = add_coding(self.workspace.directory, self.document_id, self.start, self.end, self.theme_id)
+            self.error = None
+        except ValueError as exc:
+            self.error = str(exc)
+            self.setObsolete(True)
+            return
+        if not self.first:
+            self.workspace.reload_themes(self.theme_id)
+            self.workspace.status.setText("Coding restored.")
+        self.first = False
+
+    def undo(self):
+        if self.coding_id:
+            try:
+                remove_coding(self.workspace.directory, self.coding_id)
+            except ValueError:
+                pass
+            self.workspace.reload_themes(self.theme_id)
+            self.workspace.status.setText("Coding undone. Ctrl+Shift+Z redoes it.")
 
 
 class CodingWorkspace(QWidget):
+    """The Research Workspace tab. MainWindow calls set_project() and the open_* methods."""
+    search_requested = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.directory: Path | None = None
@@ -209,17 +295,66 @@ class CodingWorkspace(QWidget):
         self.next_passage = QPushButton("Next →")
         self.next_passage.clicked.connect(lambda: self.step(1))
         view_bar.addWidget(self.next_passage)
-        self.notes_toggle = QPushButton("Notes")
+        self.search_button = QPushButton("Search all")
+        self.search_button.setToolTip("Search every document (Ctrl+Shift+F)")
+        self.search_button.clicked.connect(self.search_requested)
+        view_bar.addWidget(self.search_button)
+        self.find_button = QPushButton("Find")
+        self.find_button.setToolTip("Find in this document (Ctrl+F)")
+        self.find_button.clicked.connect(self.open_find)
+        view_bar.addWidget(self.find_button)
+        self.other_themes_toggle = QPushButton("Other themes")
+        self.other_themes_toggle.setCheckable(True)
+        self.other_themes_toggle.setChecked(True)
+        self.other_themes_toggle.setToolTip("Show other themes' colours faintly behind the selected theme")
+        self.other_themes_toggle.toggled.connect(lambda _c: self.refresh_layers())
+        view_bar.addWidget(self.other_themes_toggle)
+        self.comments_toggle = QPushButton("Comments")
+        self.comments_toggle.setCheckable(True)
+        self.comments_toggle.setChecked(True)
+        self.comments_toggle.setToolTip("Show comments beside the document")
+        view_bar.addWidget(self.comments_toggle)
+        self.notes_toggle = QPushButton("Memos")
         self.notes_toggle.setCheckable(True)
         view_bar.addWidget(self.notes_toggle)
         center_lay.addLayout(view_bar)
+        self.find_bar = FindBar()
+        self.find_bar.hide()
+        self.find_bar.changed.connect(self.run_find)
+        self.find_bar.step.connect(self.step_find)
+        self.find_bar.closed.connect(self.close_find)
+        center_lay.addWidget(self.find_bar)
         self.evidence_views = QStackedWidget()
         self.view_mode.currentIndexChanged.connect(self.evidence_views.setCurrentIndex)
         self.viewer = SourceViewer()
         self.viewer.setObjectName("documentViewer")
         self.viewer.setReadOnly(True)
+        self.viewer.setObjectName("sourceViewer")
         self.viewer.clicked.connect(self.clicked_text)
-        self.evidence_views.addWidget(self.viewer)
+        self.viewer.number_pressed.connect(self.code_selection_with_number)
+        self.layers = LayerHighlighter(self.viewer.document())
+        self.markers = MarkerStrip()
+        self.markers.jump.connect(self.jump_to_fraction)
+        reader = QWidget()
+        reader_lay = QHBoxLayout(reader)
+        reader_lay.setContentsMargins(0, 0, 0, 0)
+        reader_lay.setSpacing(2)
+        reader_lay.addWidget(self.viewer, 1)
+        reader_lay.addWidget(self.markers)
+        self.reader = reader
+        self.evidence_views.addWidget(reader)
+        self.selection_toolbar = SelectionToolbar(self.viewer.viewport())
+        self.selection_toolbar.code_requested.connect(self.code_selection_as)
+        self.selection_toolbar.comment_requested.connect(self.comment_on_selection)
+        # The toolbar appears only for selections the researcher makes, not when
+        # the app moves to a passage.
+        self.viewer.selectionChanged.connect(self.selection_toolbar.hide)
+        self.viewer.user_selected.connect(self.update_selection_toolbar)
+        self.viewer.verticalScrollBar().valueChanged.connect(self.follow_comments)
+        self.recent_theme_ids = []
+        self.find_matches = []
+        self.find_index = -1
+        self.undo_stack = QUndoStack(self)
         center_lay.addWidget(self.evidence_views, 1)
         add = QPushButton("Add selected text to chosen theme")
         self.add_selection_button = add
@@ -306,9 +441,20 @@ class CodingWorkspace(QWidget):
         note_actions.addWidget(edit_note)
         right_lay.addLayout(note_actions)
         splitter.addWidget(right)
+        self.comments_panel = CommentsPanel()
+        self.comments_panel.setMinimumWidth(260)
+        self.comments_panel.open_range.connect(self.select_source_range)
+        self.comments_toggle.toggled.connect(self.comments_panel.setVisible)
+        splitter.addWidget(self.comments_panel)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
         splitter.setStretchFactor(2, 1)
+        splitter.setStretchFactor(3, 1)
+        for keys, handler in [("Ctrl+F", self.open_find), (QKeySequence.StandardKey.Undo, self.undo_stack.undo),
+                              (QKeySequence.StandardKey.Redo, self.undo_stack.redo)]:
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(handler)
         outer.addWidget(splitter, 1)
         self.status = QLabel("Open a project to start coding.")
         outer.addWidget(self.status)
@@ -413,7 +559,60 @@ class CodingWorkspace(QWidget):
         dialog.exec()
         dialog.deleteLater()
 
+    def capture_view(self):
+        """Current layout as a dict (version 1). Positions are canonical offsets so they survive a reload."""
+        from bisect import bisect_right
+        cursor = self.viewer.textCursor()
+        positions = self.coords.canonical_to_qt
+        return {'version': 1, 'run_id': self.run_id, 'document_id': self.doc_id,
+                'theme_id': self.current_theme_id(),
+                'anchor': max(0, bisect_right(positions, cursor.anchor()) - 1),
+                'position': max(0, bisect_right(positions, cursor.position()) - 1),
+                'view_mode': self.view_mode.currentIndex(),
+                'organization': self.organization_tabs.currentIndex(),
+                'scroll': self.viewer.verticalScrollBar().value()}
+
+    def restore_view(self, view):
+        """Apply a dict from capture_view(). Ignores anything it doesn't recognize."""
+        if not isinstance(view, dict) or view.get('version') != 1:
+            return
+        run = view.get('run_id')
+        if run is None or isinstance(run, str):
+            index = self.run_choice.findData(run)
+            if index >= 0:
+                self.run_choice.setCurrentIndex(index)
+        theme = view.get('theme_id')
+        if isinstance(theme, str):
+            for index in range(self.themes.count()):
+                if self.themes.item(index).data(Qt.ItemDataRole.UserRole) == theme:
+                    self.themes.setCurrentRow(index)
+                    break
+        doc = view.get('document_id')
+        index = self.document_choice.findData(doc) if isinstance(doc, str) else -1
+        if index < 0:
+            return  # Unavailable document: keep the normal opening view.
+        self.document_choice.setCurrentIndex(index)
+        # Theme selection can navigate to another document; ensure this one is loaded.
+        if self.doc_id != doc:
+            self.load_document()
+        for name, widget in [('view_mode', self.view_mode), ('organization', self.organization_tabs)]:
+            value = view.get(name)
+            if type(value) is int and 0 <= value < widget.count():
+                widget.setCurrentIndex(value)
+        anchor, position = view.get('anchor'), view.get('position')
+        if all(type(value) is int and 0 <= value <= len(self.source_text) for value in (anchor, position)):
+            cursor = self.viewer.textCursor()
+            cursor.setPosition(self.coords.canonical_to_qt[anchor])
+            cursor.setPosition(self.coords.canonical_to_qt[position], QTextCursor.KeepAnchor)
+            self.viewer.setTextCursor(cursor)
+            self.viewer.ensureCursorVisible()
+        scroll = view.get('scroll')
+        if type(scroll) is int and scroll >= 0:
+            self.viewer.verticalScrollBar().setValue(scroll)
+
     def set_project(self, directory: Path):
+        """Point the workspace at a project. Clears undo history, scope and selection."""
+        self.undo_stack.clear()
         self.directory = Path(directory)
         self.doc_id = None
         self.run_id = None
@@ -426,6 +625,7 @@ class CodingWorkspace(QWidget):
         self.status.setText("Select a theme and document, or create a new theme.")
 
     def reload_runs(self, selected=None):
+        """Refill the analysis dropdown (newest first, then 'Manual coding only') and select `selected`."""
         self.run_choice.blockSignals(True)
         self.run_choice.clear()
         used = {}
@@ -461,6 +661,7 @@ class CodingWorkspace(QWidget):
             QMessageBox.warning(self, "Could not rename analysis", str(exc))
 
     def change_run(self, _index=-1):
+        """Selected analysis changed: reset scope, then reload documents and themes for that run."""
         self.run_id = self.run_choice.currentData()
         self._navigation = None
         self._draft_theme_ids.clear()
@@ -482,6 +683,7 @@ class CodingWorkspace(QWidget):
             self.naming_status.setPlainText(labeling_report(self.directory, self.run_id))
 
     def reload_documents(self):
+        """Refill the document dropdown with the run's documents (all documents for manual coding)."""
         if self.directory is None:
             return
         old = self.doc_id
@@ -496,10 +698,22 @@ class CodingWorkspace(QWidget):
         self.document_choice.blockSignals(False)
         self.load_document()
         if self._tree_nodes:
-            self.rebuild_navigation(self.visible_themes())
+            self.rebuild_navigation(self.visible_themes(fresh=True))
             self.sync_tree_selection()
 
     def load_document(self, _index=-1):
+        """Show the document selected in the dropdown.
+
+        Pre: any comment draft is saved first; if that fails the selection
+        snaps back to the previous document.
+        Post: viewer, layers, comments and notes all show the new document. If Qt
+        altered the text, coding is disabled for it rather than risk wrong offsets.
+        """
+        if not self.comments_panel.flush_pending():
+            self.document_choice.blockSignals(True)
+            self.document_choice.setCurrentIndex(self.document_choice.findData(self.doc_id))
+            self.document_choice.blockSignals(False)
+            return
         doc_id = self.document_choice.currentData()
         self.doc_id = doc_id
         if 0 <= self.match_index < len(self.matches) and self.matches[self.match_index][1] != doc_id:
@@ -510,6 +724,7 @@ class CodingWorkspace(QWidget):
         self.source_text = ""
         self.coords = TextCoordinates.build("")
         if not doc_id or not self.directory:
+            self.comments_panel.set_document(self.directory, None)
             return
         _name, self.source_text, _spans = get_document(self.directory, doc_id)
         self.coords = TextCoordinates.build(self.source_text)
@@ -519,6 +734,10 @@ class CodingWorkspace(QWidget):
             self.viewer.setEnabled(False)
             return
         self.viewer.setEnabled(True)
+        self.comments_panel.set_document(self.directory, doc_id)
+        self.refresh_layers()
+        if self.find_bar.isVisible():
+            self.run_find()
         scope = self._navigation or {}
         if not self._from_tree and scope.get("kind") in {"group", "passage"} and scope.get("document_id") != doc_id and self.current_theme_id():
             self._navigation = {"kind": "group", "theme_id": self.current_theme_id(), "document_id": doc_id}
@@ -532,14 +751,80 @@ class CodingWorkspace(QWidget):
         self.reload_notes()
         self.update_passage_position()
 
-    def visible_themes(self):
+    def visible_themes(self, fresh: bool = False):
+        """Themes for the current analysis, cached until themes are reloaded.
+
+        Listing themes walks every assignment, so it is computed once per reload
+        instead of on every click (colours, toolbar, labels all reuse it).
+        """
+        key = (self.directory, self.run_id, frozenset(self._draft_theme_ids))
+        cached = getattr(self, "_visible_cache", None)
+        if not fresh and cached is not None and cached[0] == key:
+            return list(cached[1])
         rows = list_themes(self.directory, self.run_id)
         visible = {row[0] for row in rows}
         rows.extend(row for row in list_themes(self.directory)
                     if row[0] in self._draft_theme_ids and row[0] not in visible)
-        return sorted(rows, key=lambda row: row[1].lower())
+        rows = sorted(rows, key=lambda row: row[1].lower())
+        self._visible_cache = (key, rows)
+        return list(rows)
+
+    def range_theme_labels(self, doc_id, start, end):
+        """Theme names for an exact passage range, from the navigation already in memory."""
+        if not self.run_id:
+            return themes_for_range(self.directory, doc_id, start, end, None)
+        labels = {tid: label for tid, label, _ in self.visible_themes()}
+        found = {labels[tid] for (tid, doc), rows in self._navigation_groups.items()
+                 if doc == doc_id and tid in labels for row in rows if row[3] == start and row[4] == end}
+        return sorted(found, key=str.lower)
+
+    def refresh_theme_labels(self):
+        """Update names in place without reselecting evidence or reloading draft editors."""
+        rows = {tid: (label, count) for tid, label, count in self.visible_themes(fresh=True)}
+        self.themes.blockSignals(True)
+        try:
+            for index in range(self.themes.count()):
+                item = self.themes.item(index)
+                value = rows.get(item.data(Qt.ItemDataRole.UserRole))
+                if value:
+                    item.setText(f'{value[0]}  ({value[1]})')
+        finally:
+            self.themes.blockSignals(False)
+        for tree, nodes in self._tree_nodes.items():
+            tree.blockSignals(True)
+            try:
+                for item in nodes.values():
+                    data = item.data(0, Qt.ItemDataRole.UserRole) or {}
+                    theme = data.get('theme_id')
+                    if theme not in rows:
+                        continue
+                    if data.get('kind') == 'theme':
+                        groups = [group for (tid, _), group in self._navigation_groups.items() if tid == theme]
+                        count = sum(map(len, groups))
+                        label = f"{rows[theme][0]} ({len(groups)} {'document' if len(groups) == 1 else 'documents'} · {count} {'passage' if count == 1 else 'passages'})"
+                    elif data.get('kind') == 'group' and tree is self.document_tree:
+                        count = len(self._navigation_groups.get((theme, data['document_id']), []))
+                        label = f"{rows[theme][0]} ({count} {'passage' if count == 1 else 'passages'})"
+                    else:
+                        continue
+                    item.setText(0, label)
+                    item.setToolTip(0, label)
+            finally:
+                tree.blockSignals(False)
+
+        if 0 <= self.match_index < len(self.matches):
+            assignment, doc, _name, start, end, _excerpt = self.matches[self.match_index]
+            if doc == self.doc_id:
+                origin = assignment_origin(self.directory, assignment)
+                self.range_themes.setText(('Model suggestion' if origin == 'model' else 'Researcher coding')
+                                         + '\nThemes: ' + ', '.join(self.range_theme_labels(doc, start, end)))
 
     def reload_themes(self, select_id: str | None = None):
+        """Rebuild the theme list and trees from the database, keeping the selection and scope.
+
+        Call after any change to themes or codings. `select_id` picks the theme to
+        select afterwards (defaults to the current one).
+        """
         if self.directory is None:
             return
         if select_id is None and self.themes.currentItem():
@@ -547,7 +832,7 @@ class CodingWorkspace(QWidget):
         previous_navigation = dict(self._navigation) if self._navigation else None
         self.themes.blockSignals(True)
         self.themes.clear()
-        rows = self.visible_themes()
+        rows = self.visible_themes(fresh=True)
         for theme_id, label, count in rows:
             item = QListWidgetItem(f"{label}  ({count})")
             item.setData(Qt.ItemDataRole.UserRole, theme_id)
@@ -589,6 +874,7 @@ class CodingWorkspace(QWidget):
         return item
 
     def rebuild_navigation(self, themes):
+        """Recompute navigation_groups() and rebuild both trees for `themes`."""
         documents = [(self.document_choice.itemData(i), self.document_choice.itemText(i)) for i in range(self.document_choice.count())]
         self._navigation_groups = navigation_groups(self.directory, {tid for tid, _, _ in themes}, {doc for doc, _ in documents}, self.run_id)
         self._rebuilding_trees = True
@@ -626,6 +912,7 @@ class CodingWorkspace(QWidget):
                 tree.blockSignals(False)
         finally:
             self._rebuilding_trees = False
+        self.refresh_layers()
 
     def add_group_node(self, tree, parent, theme, document, label):
         count = len(self._navigation_groups[(theme, document)])
@@ -741,6 +1028,7 @@ class CodingWorkspace(QWidget):
             QMessageBox.warning(self, "Could not create theme", str(exc))
 
     def select_theme(self, current, _previous=None):
+        """Theme selection changed: load its matches into the evidence list and highlight them."""
         if not self._from_tree:
             self._navigation = {"kind": "theme", "theme_id": current.data(Qt.ItemDataRole.UserRole)} if current else None
         self.matches = []
@@ -848,6 +1136,7 @@ class CodingWorkspace(QWidget):
             QMessageBox.warning(self, "Could not remove coding", str(exc))
 
     def accept_selected_suggestion(self):
+        """Turn the selected model suggestion into a researcher coding (kept across later analyses)."""
         if not self.directory or not 0 <= self.match_index < len(self.matches):
             self.status.setText("Select a suggested passage first.")
             return
@@ -1023,6 +1312,12 @@ class CodingWorkspace(QWidget):
         if not self.directory or not self.doc_id or not self.themes.currentItem() or not self.viewer.isEnabled():
             self.status.setText("Choose a theme and select text in a document first.")
             return
+        self.code_selection_as(self.themes.currentItem().data(Qt.ItemDataRole.UserRole))
+
+    def code_selection_as(self, theme_id):
+        """Code the selected text as ``theme_id`` (toolbar, number keys, or the Add button). Undoable."""
+        if not self.directory or not self.doc_id or not self.viewer.isEnabled():
+            return
         cursor = self.viewer.textCursor()
         if not cursor.hasSelection():
             self.status.setText("Drag across document text to select a passage first.")
@@ -1030,21 +1325,227 @@ class CodingWorkspace(QWidget):
         try:
             start, end = self.coords.canonical_range(cursor.selectionStart(), cursor.selectionEnd())
             doc_id = self.doc_id
-            theme_id = self.themes.currentItem().data(Qt.ItemDataRole.UserRole)
-            add_coding(self.directory, self.doc_id, start, end, theme_id)
+            command = AddCodingCommand(self, doc_id, start, end, theme_id)
+            self.undo_stack.push(command)
+            if command.error:
+                raise ValueError(command.error)
         except ValueError as exc:
             self.status.setText(str(exc))
             return
+        self.recent_theme_ids = [theme_id] + [t for t in self.recent_theme_ids if t != theme_id][:5]
+        self.selection_toolbar.hide()
         self.reload_themes(theme_id)
         self.select_range(doc_id, start, end)
-        self.status.setText(f"Saved coding at source characters [{start}, {end}).")
+        label = next((label for tid, label, _ in self.visible_themes() if tid == theme_id), "the theme")
+        self.status.setText(f"Coded the selection as {label}. Ctrl+Z undoes it.")
+
+    # Reader layers, find, toolbar, comments ----------------------------------------
+    def theme_colour_index(self):
+        return {tid: index for index, (tid, label, _count) in enumerate(self.visible_themes())}
+
+    def refresh_layers(self):
+        """Repaint theme colour bands and scrollbar markers for the open document.
+
+        Uses the cached _navigation_groups, so it doesn't hit the database.
+        """
+        if not self.directory or not self.doc_id or not self.viewer.isEnabled():
+            self.layers.set_theme_ranges([])
+            self.markers.set_markers([])
+            return
+        try:
+            colours = self.theme_colour_index()
+            labels = {tid: label for tid, label, _ in self.visible_themes()}
+        except Exception:
+            return
+        current = self.current_theme_id()
+        show_others = self.other_themes_toggle.isChecked()
+        ranges, markers = [], []
+        total = max(1, self.viewer.document().characterCount())
+        for (theme_id, doc), rows in self._navigation_groups.items():
+            if doc != self.doc_id or theme_id not in colours or labels.get(theme_id) == "Uncategorized":
+                continue
+            index = colours[theme_id]
+            selected = theme_id == current
+            if not selected and not show_others:
+                continue
+            # Other themes stay faint so the selected theme and the current passage stand out.
+            fill = fill_color(index, 55 if selected or current is None else 28)
+            for row in rows:
+                q_start, q_end = self.coords.qt_range(row[3], row[4])
+                ranges.append((q_start, q_end, fill))
+                markers.append((q_start / total, q_end / total, theme_color(index), selected))
+        self.layers.set_theme_ranges(ranges)
+        markers.sort(key=lambda m: m[3])
+        self.markers.set_markers(markers)
+
+    def jump_to_fraction(self, fraction):
+        position = int(fraction * max(0, self.viewer.document().characterCount() - 1))
+        cursor = self.viewer.textCursor()
+        cursor.setPosition(position)
+        self.viewer.setTextCursor(cursor)
+        self.viewer.centerCursor()
+
+    def select_source_range(self, start, end):
+        """Select canonical [start, end) in the viewer and scroll to it."""
+        if not self.viewer.isEnabled() or end > len(self.source_text):
+            return
+        q_start, q_end = self.coords.qt_range(start, end) if end > start else self.coords.qt_range(start, min(start + 1, len(self.source_text)))
+        cursor = self.viewer.textCursor()
+        cursor.setPosition(q_start)
+        cursor.setPosition(q_end, QTextCursor.MoveMode.KeepAnchor)
+        self.viewer.setTextCursor(cursor)
+        self.viewer.centerCursor()
+
+    def open_find(self):
+        if self.view_mode.currentIndex() != 0:
+            self.view_mode.setCurrentIndex(0)
+        self.find_bar.show()
+        selected = self.viewer.textCursor().selectedText()
+        if selected and len(selected) < 80 and "\u2029" not in selected:
+            self.find_bar.field.setText(selected)
+        self.find_bar.field.setFocus()
+        self.find_bar.field.selectAll()
+        self.run_find()
+
+    def close_find(self):
+        self.find_bar.hide()
+        self.find_matches, self.find_index = [], -1
+        self.layers.set_find([])
+        self.viewer.setFocus()
+
+    def run_find(self):
+        import re
+        needle = self.find_bar.field.text()
+        self.find_matches, self.find_index = [], -1
+        if needle and self.source_text and self.viewer.isEnabled():
+            flags = 0 if self.find_bar.case.isChecked() else re.IGNORECASE
+            spans = [(m.start(), m.end()) for m in re.finditer(re.escape(needle), self.source_text, flags)]
+            if self.find_bar.coded_only.isChecked():
+                coded = [(row[3], row[4]) for (tid, doc), rows in self._navigation_groups.items()
+                         if doc == self.doc_id for row in rows]
+                spans = [(a, b) for a, b in spans if any(s <= a and b <= e for s, e in coded)]
+            self.find_matches = spans
+        if self.find_matches:
+            self.find_index = 0
+        self.show_find()
+
+    def step_find(self, direction):
+        if self.find_matches:
+            self.find_index = (self.find_index + direction) % len(self.find_matches)
+            self.show_find()
+
+    def show_find(self):
+        qt = [self.coords.qt_range(a, b) for a, b in self.find_matches]
+        self.layers.set_find(qt, self.find_index)
+        if not self.find_bar.field.text():
+            self.find_bar.count.setText("")
+        elif not self.find_matches:
+            self.find_bar.count.setText("No matches")
+        else:
+            self.find_bar.count.setText(f"{self.find_index + 1} of {len(self.find_matches)}")
+            q_start, q_end = qt[self.find_index]
+            cursor = self.viewer.textCursor()
+            cursor.setPosition(q_start)
+            self.viewer.setTextCursor(cursor)
+            self.viewer.centerCursor()
+
+    def toolbar_themes(self):
+        colours = self.theme_colour_index()
+        return [(tid, label, colours[tid]) for tid, label, _ in self.visible_themes() if label != "Uncategorized"]
+
+    def update_selection_toolbar(self):
+        cursor = self.viewer.textCursor()
+        if (not cursor.hasSelection() or not self.viewer.isEnabled() or not self.directory
+                or not self.doc_id or self.view_mode.currentIndex() != 0):
+            self.selection_toolbar.hide()
+            return
+        self.selection_toolbar.set_themes(self.toolbar_themes(), self.recent_theme_ids)
+        self.selection_toolbar.show()
+        self.selection_toolbar.layout_.activate()
+        self.selection_toolbar.adjustSize()
+        start = QTextCursor(self.viewer.document())
+        start.setPosition(cursor.selectionStart())
+        rect = self.viewer.cursorRect(start)
+        bar = self.selection_toolbar
+        viewport = self.viewer.viewport()
+        x = max(4, min(rect.left(), viewport.width() - bar.width() - 4))
+        y = rect.top() - bar.height() - 6
+        if y < 4:
+            y = self.viewer.cursorRect(cursor).bottom() + 6
+        bar.move(QPoint(x, y))
+        bar.show()
+        bar.raise_()
+
+    def code_selection_with_number(self, number):
+        themes = self.toolbar_themes()
+        if 1 <= number <= len(themes):
+            self.code_selection_as(themes[number - 1][0])
+
+    def comment_on_selection(self):
+        cursor = self.viewer.textCursor()
+        if not cursor.hasSelection() or not self.doc_id:
+            return
+        start, end = self.coords.canonical_range(cursor.selectionStart(), cursor.selectionEnd())
+        self.selection_toolbar.hide()
+        self.comments_toggle.setChecked(True)
+        self.comments_panel.begin_comment(start, end, self.source_text[start:end])
+
+    def follow_comments(self, _value=None):
+        if not self.comments_panel.cards or not self.source_text:
+            return
+        position = self.viewer.cursorForPosition(QPoint(0, 0)).position()
+        try:
+            start, _ = self.coords.canonical_range(position, min(position + 1, len(self.coords.display_text)))
+        except Exception:
+            return
+        self.comments_panel.follow(start)
 
     def step(self, direction: int):
         if self.matches:
             index = 0 if self.match_index < 0 else (self.match_index + direction) % len(self.matches)
             self.hits.setCurrentRow(index)
+            self.mark_current_read()
+
+    def mark_current_read(self):
+        """Count a passage the researcher stepped to as read, for the coverage indicator."""
+        if not self.directory or not 0 <= self.match_index < len(self.matches):
+            return
+        _id, doc, _name, start, end, _ = self.matches[self.match_index]
+        try:
+            from qualitative_themes.storage.reading import mark
+            mark(self.directory, doc, start, end, "read", self.current_theme_id(), self.run_id)
+        except Exception:
+            pass
+
+    def open_group(self, theme_id, document_id):
+        """Show one theme's passages within one document (used by the overview heatmap)."""
+        self.organization_tabs.setCurrentWidget(self.theme_tree)
+        self.reload_themes(theme_id)
+        data = {"kind": "group", "theme_id": theme_id, "document_id": document_id}
+        item = self.find_navigation_node(self.theme_tree, data)
+        if item is not None:
+            self.theme_tree.setCurrentItem(item)
+            self.tree_selected(item)
+
+    def open_passage(self, theme_id, document_id, start, end):
+        self.open_group(theme_id, document_id)
+        self.view_mode.setCurrentIndex(0)
+        self.select_range(document_id, start, end)
+
+    def open_location(self, document_id, start, end):
+        """Open a document at an exact range (used by search)."""
+        index = self.document_choice.findData(document_id)
+        if index < 0:
+            self.run_choice.setCurrentIndex(self.run_choice.findData(None))
+            index = self.document_choice.findData(document_id)
+        if index < 0:
+            return
+        self.view_mode.setCurrentIndex(0)
+        self.document_choice.setCurrentIndex(index)
+        self.select_source_range(start, end)
 
     def jump_to(self, index: int):
+        """Select matches[index]: switch document if needed, select the range, update side panels."""
         if not 0 <= index < len(self.matches):
             return
         self.match_index = index
@@ -1066,13 +1567,14 @@ class CodingWorkspace(QWidget):
         self.highlight_matches()
         origin = assignment_origin(self.directory, _id)
         self.range_themes.setText(("Model suggestion" if origin == "model" else "Researcher coding") +
-                                 "\nThemes: " + ", ".join(themes_for_range(self.directory, doc_id, start, end, self.run_id)))
+                                 "\nThemes: " + ", ".join(self.range_theme_labels(doc_id, start, end)))
         self.reload_notes()
         self.sync_tree_selection()
         self.update_passage_position()
         self.status.setText(f"Occurrence {index + 1} of {len(self.matches)} · [{start}, {end})")
 
     def clicked_text(self, qt_position: int):
+        """Select the evidence row whose range contains a clicked Qt position."""
         if not self.doc_id:
             return
         for index, (_id, doc_id, _name, start, end, _excerpt) in enumerate(self.matches):
@@ -1083,9 +1585,11 @@ class CodingWorkspace(QWidget):
                     break
 
     def highlight_matches(self):
+        """Draw the selected theme's ranges in the open document (stronger for the current one)."""
         if not self.doc_id or not self.viewer.isEnabled():
             return
         selections = []
+        colour_index = self.theme_colour_index().get(self.current_theme_id(), 0)
         for i, (_id, doc_id, _name, start, end, _excerpt) in enumerate(self.matches):
             if doc_id != self.doc_id:
                 continue
@@ -1099,7 +1603,8 @@ class CodingWorkspace(QWidget):
             selection = QTextEdit.ExtraSelection()
             selection.cursor = cursor
             fmt = QTextCharFormat()
-            fmt.setBackground(QColor("#edb95c" if i == self.match_index else "#ffe5a4"))
+            # The selected theme in its own colour, stronger than the background layer.
+            fmt.setBackground(fill_color(colour_index, 200 if i == self.match_index else 120))
             selection.format = fmt
             selections.append(selection)
         self.viewer.setExtraSelections(selections)

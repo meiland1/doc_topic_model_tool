@@ -27,6 +27,8 @@ def test_all_units_cover_exact_unicode_and_page_boundaries():
             "The phrase repeats. The phrase repeats.\n\f\n"
             "Résumé services changed in year 2026.\n\n")
     for unit in UNITS:
+        if unit in {'Automatic passages', 'Interview passages', 'Semantic passages'}:
+            continue  # Token-based coverage is exercised with an injected tokenizer in test_token_passages.
         spans = segment_text(text, unit)
         _assert_exact_coverage(text, spans)
         assert all(model_text(text, span) for span in spans)

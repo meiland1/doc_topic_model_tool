@@ -38,6 +38,28 @@ def test_switch_preserves_source_range_and_navigation(qt_test_application, tmp_p
     w.close()
 
 
+def test_naming_refresh_preserves_selection_and_drafts(qt_test_application, tmp_path):
+    from qualitative_themes.storage.coding import rename_theme
+    w, directory, doc, theme = workspace(tmp_path)
+    w.hits.setCurrentRow(1)
+    selected = w.viewer.textCursor().selectedText()
+    navigation = dict(w._navigation or {})
+    w.note_editor.setPlainText('Existing unsaved draft')
+    w.comments_panel.begin_comment(22, 49, 'Travel costs prevent visits.')
+    w.comments_panel.editor.setPlainText('Comment being written')
+    rename_theme(directory, theme, 'Researcher label')
+    w.refresh_theme_labels()
+    assert w.viewer.textCursor().selectedText() == selected
+    assert (w._navigation or {}) == navigation
+    assert w.match_index == 1
+    assert w.note_editor.toPlainText() == 'Existing unsaved draft'
+    assert w.comments_panel.editor.toPlainText() == 'Comment being written'
+    assert w.comments_panel.pending == (22, 49, 'Travel costs prevent visits.')
+    assert 'Researcher label' in w.themes.currentItem().text()
+    assert 'Researcher label' in w.range_themes.text()
+    w.close()
+
+
 def test_passage_draft_restores_without_cross_target_save(qt_test_application, tmp_path):
     w, directory, doc, theme = workspace(tmp_path)
     first = w.matches[0][0]; second = w.matches[1][0]

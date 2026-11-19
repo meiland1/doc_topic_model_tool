@@ -8,12 +8,16 @@ from qualitative_themes.storage.provenance import method_summary, method_label
 
 
 def analysis_title(settings_json, completed_at):
+    """Display name for a run: the researcher's name if set, otherwise date + passage size."""
     settings = json.loads(settings_json) if isinstance(settings_json, str) else settings_json
     return settings.get("display_name") or (
         f"Analysis {(completed_at or '')[:19].replace('T', ' ')} · {settings.get('analysis_unit', 'Passages')}")
 
 
 def rename_analysis(directory, run_id, name):
+    """Pre: a completed run; `name` is one line, <= 120 chars, unique among runs.
+    Post: an empty name clears the custom name and goes back to the automatic one.
+    """
     name = name.strip()
     if len(name) > 120 or any(ord(char) < 32 for char in name):
         raise ValueError("Use a single-line analysis name of at most 120 characters.")
@@ -42,6 +46,7 @@ def rename_analysis(directory, run_id, name):
 
 
 def history_runs(directory, offset=0, limit=50):
+    """One page of runs, newest first. Returns (rows, total_count) for paging."""
     with connect(directory) as conn:
         count = conn.execute("SELECT count(*) FROM analysis_runs").fetchone()[0]
         rows = conn.execute("SELECT id,started_at,completed_at,status,settings_json,model_info_json FROM analysis_runs ORDER BY started_at DESC,rowid DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
@@ -51,6 +56,11 @@ def history_runs(directory, offset=0, limit=50):
 
 
 def analysis_details(directory, run_id):
+    """Plain-text audit summary of one run, plus its raw settings/model_info.
+
+    Only reads what was recorded at run time, so older runs show
+    'Not recorded' for fields added later.
+    """
     with connect(directory) as conn:
         row = conn.execute("SELECT started_at,completed_at,status,settings_json,model_info_json FROM analysis_runs WHERE id=?", (run_id,)).fetchone()
         if not row:
@@ -71,6 +81,23 @@ def analysis_details(directory, run_id):
              "Documents: " + (", ".join(documents) or "None recorded"), f"Passages: {segments}",
              f"Passage size: {settings.get('analysis_unit', 'Not recorded')}"]
     lines.append(method_summary(settings, info))
+    segmentation = info.get('segmentation', settings.get('segmentation', {}))
+    if segmentation:
+        lines.append('Passage splitting: ' + segmentation.get('method', 'Not recorded'))
+        if segmentation.get('experimental'):
+            lines.append(f"Experimental semantic sensitivity: {segmentation.get('semantic_threshold')}; not a confidence score")
+            if 'semantic_min_tokens' in segmentation:
+                lines.append(f"Semantic minimum passage target: {segmentation['semantic_min_tokens']} tokens; "
+                             f"avoided {segmentation.get('suppressed_semantic_breaks', 0)} short-passage splits")
+        if 'speaker_turns' in segmentation:
+            lines.append(f"Detected speaker turns: {segmentation['speaker_turns']}")
+            lines.append(f"Documents using Auto fallback with all text retained: {segmentation.get('speaker_fallbacks', 0)}")
+        if 'max_tokens' in segmentation:
+            lines.append(f"Model input limit: {segmentation['max_tokens']} tokens (including special tokens)")
+            lines.append(f"Oversized passages at preparation: {segmentation.get('oversized', 0)}")
+            lines.append(f"Extra splits within sentences: {segmentation.get('forced_splits', 0)}")
+    lines.append('Truncation permission: ' + ('Allowed' if settings['allow_truncation'] else 'Not allowed')
+                 if 'allow_truncation' in settings else 'Truncation permission: Not recorded in this older analysis')
     if parent:
         lines.append("Refined from: " + analysis_title(parent[0], parent[1] or parent[2]))
     for key, label in [("analysis_style", "Discovery style"), ("min_topic_size", "Minimum evidence"),
@@ -99,9 +126,16 @@ def analysis_details(directory, run_id):
 
 
 def history_events(directory, offset=0, limit=100):
+    """One page of audit events as readable summaries, newest first.
+
+    Returns (events, total). Each event is {timestamp, summary, kind, details}.
+    'workspace_view_saved' is a UI preference stored in the same table and is
+    left out. New event kinds show up with a generic summary until a branch is
+    added here.
+    """
     with connect(directory) as conn:
-        total = conn.execute("SELECT count(*) FROM history_events").fetchone()[0]
-        rows = conn.execute("SELECT occurred_at,event_type,details_json FROM history_events ORDER BY occurred_at DESC,rowid DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+        total = conn.execute("SELECT count(*) FROM history_events WHERE event_type != 'workspace_view_saved'").fetchone()[0]
+        rows = conn.execute("SELECT occurred_at,event_type,details_json FROM history_events WHERE event_type != 'workspace_view_saved' ORDER BY occurred_at DESC,rowid DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
         themes, docs, runs = {}, {}, {}
         def theme(tid):
             if not tid:

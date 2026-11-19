@@ -3,10 +3,16 @@ from dataclasses import replace
 
 
 def guided_seed_topics(settings):
+    """Seed word lists for BERTopic's guided mode, one per topic definition."""
     return [[word.strip() for word in text.split(',') if word.strip()] for _, text in settings.topic_definitions]
 
 
 def match_predefined(embeddings, category_embeddings, threshold):
+    """Assign each passage to its most similar category, or -1 if below `threshold`.
+
+    Returns (assignments, best_similarity_per_passage). Cosine similarity, not
+    a probability.
+    """
     import numpy as np
     passages, categories = np.asarray(embeddings, dtype=float), np.asarray(category_embeddings, dtype=float)
     if passages.ndim != 2 or categories.ndim != 2 or passages.shape[1] != categories.shape[1] or not len(categories):
@@ -24,6 +30,12 @@ def match_predefined(embeddings, category_embeddings, threshold):
 
 
 def zero_shot_partition(passages, embeddings, category_embeddings, settings, discover, check=lambda: None):
+    """Match passages to predefined topics, then run discovery on what's left.
+
+    Topic ids 0..N-1 are the predefined topics in order; discovered topics come
+    after them. Discovery is skipped when too few passages are unmatched; those
+    stay -1 (Uncategorized). Returns (assignments, model_info additions).
+    """
     import numpy as np
     assignments, similarities = match_predefined(embeddings, category_embeddings, settings.zeroshot_min_similarity)
     residual = [i for i, topic in enumerate(assignments) if topic == -1]
@@ -58,6 +70,7 @@ def zero_shot_partition(passages, embeddings, category_embeddings, settings, dis
 
 
 def restore_partition_keywords(passages, assignments, representation):
+    """Keywords and representatives for a fixed partition, keyed by the original topic ids."""
     if len(representation.assignments) != len(assignments):
         raise ValueError('Keyword extraction returned incomplete memberships.')
     mapping = {}

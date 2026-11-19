@@ -1,5 +1,10 @@
+"""Project shell and import/segmentation view.
+
+MainWindow is the hub for everything else in gui/: it builds the tabs,
+owns the worker threads, and routes navigation between tabs (search
+results, overview cells and guided reading all open in the workspace).
+"""
 import traceback
-"""Project shell and import/segmentation view."""
 from pathlib import Path
 from dataclasses import replace
 
@@ -14,14 +19,11 @@ from qualitative_themes.storage.database import create_project, open_project
 from qualitative_themes.storage.documents import (ImportOutcome, get_document,
                                                    import_document, list_documents, remove_documents, restore_documents)
 from qualitative_themes.analysis.segment import UNITS
-from qualitative_themes.storage.segmentation import (SegmentationCancelled,
-                                                      create_segmentation_run,
-                                                      list_segments)
+from qualitative_themes.storage.segmentation import list_segments
 from qualitative_themes.gui.task_progress import TaskProgress
 from qualitative_themes.gui.coding_workspace import CodingWorkspace
-from qualitative_themes.analysis.topics import (AnalysisCancelled, analyze,
-                                                download_embedding_model)
-from qualitative_themes.analysis.labels import label_run, list_local_models, labeling_report
+from qualitative_themes.analysis.topics import AnalysisCancelled, analyze
+from qualitative_themes.analysis.labels import label_run, list_local_models, labeling_report, AUTO_NAMING_LIMIT
 from qualitative_themes.analysis.settings import AnalysisSettings
 from qualitative_themes.gui.analysis_setup import AnalysisSetupDialog
 from qualitative_themes.analysis.refinement import load_source, list_proposals, cancel_proposal
@@ -31,11 +33,12 @@ from qualitative_themes.gui.refinement import RefinementSetupDialog, RefinementR
 import json
 from qualitative_themes.storage.preferences import load_setup, save_setup, result_summary
 
-from PyQt6.QtWidgets import QMessageBox, QTextBrowser, QDialog
-from PySide6.QtWidgets import QMessageBox, QTextBrowser, QDialog, QVBoxLayout, QPushButton
+
+from qualitative_themes.gui.worker import WorkerThread
 
 
-class OllamaModelsWorker(QThread):
+class OllamaModelsWorker(WorkerThread):
+    """List installed naming models off the GUI thread (the engine may be slow to answer)."""
     result = Signal(object)
     failed = Signal(str)
 
@@ -47,46 +50,91 @@ class OllamaModelsWorker(QThread):
             self.failed.emit(str(exc))
 
 
-class AnalysisWorker(QThread):
+class EngineStartWorker(WorkerThread):
+    """Install any bundled model pack, then start the private local AI engine."""
+    ready = Signal(object)
+
+    def run(self):
+        from qualitative_themes.runtime.engine import EngineStatus, get_engine
+        from qualitative_themes.runtime.model_pack import install_bundled_packs
+        try:
+            install_bundled_packs()
+        except Exception:
+            traceback.print_exc()
+        try:
+            self.ready.emit(get_engine().start())
+        except Exception as exc:
+            traceback.print_exc()
+            self.ready.emit(EngineStatus("failed", message=str(exc)))
+
+
+class PackInstallWorker(WorkerThread):
+    """Install a .tmtpack (or split pack) chosen from the start screen.
+
+    done(ok, message) is emitted once, on success or failure.
+    """
+    progress = Signal(str)
+    done = Signal(bool, str)
+
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
+        self.path = path
+
+    def run(self):
+        from qualitative_themes.runtime.model_pack import install_model_pack
+        try:
+            info = install_model_pack(self.path, progress=self.progress.emit)
+            self.done.emit(True, f"Added the theme-naming model {info['model']}.")
+        except Exception as exc:
+            traceback.print_exc()
+            self.done.emit(False, str(exc))
+
+
+class AnalysisWorker(WorkerThread):
+    """Runs a new analysis, or names the themes of an existing run when run_id is given.
+
+    Signals: result(run_id, passages) as soon as the analysis is saved;
+    naming_complete(run_id) later if naming ran; failed(message); cancelled().
+    The analysis is already saved before naming starts, so a naming failure or
+    cancel never loses it.
+    """
     progress = Signal(str)
     result = Signal(str, int)
+    naming_complete = Signal(str)
     failed = Signal(str)
     cancelled = Signal()
 
-    def __init__(self, directory, unit, document_ids, download=False, parent=None,
+    def __init__(self, directory, unit, document_ids, parent=None,
                  name_themes=False, ollama_model=None, run_id=None, settings=None):
         super().__init__(parent)
         self.directory, self.unit, self.document_ids = directory, unit, document_ids
-        self.download = download
         self.name_themes, self.ollama_model, self.run_id = name_themes, ollama_model, run_id
         self.settings = settings or AnalysisSettings()
 
     def run(self):
         try:
-            if self.download:
-                self.progress.emit("Downloading model weights for offline use…")
-                download_embedding_model(self.directory, self.settings)
-                if self.isInterruptionRequested():
-                    raise AnalysisCancelled()
-                self.progress.emit("Embedding model is ready. Select documents and click Analyze.")
-            elif self.run_id:
+            if self.run_id:
                 label_run(self.directory, self.run_id, self.ollama_model,
                           progress=self.progress.emit, should_cancel=self.isInterruptionRequested)
-                self.result.emit(self.run_id, len(list_segments(self.directory, self.run_id)))
+                self.naming_complete.emit(self.run_id)
             else:
                 run_id, count = analyze(self.directory, self.unit, self.document_ids,
                     settings=self.settings, progress=self.progress.emit, should_cancel=self.isInterruptionRequested)
+                self.result.emit(run_id, count)
                 if self.name_themes:
+                    self.progress.emit('Analysis saved. You can read and code while optional theme naming finishes…')
                     try:
-                        label_run(self.directory, run_id, self.ollama_model,
-                                  progress=self.progress.emit, should_cancel=self.isInterruptionRequested)
+                        attempt = label_run(self.directory, run_id, self.ollama_model,
+                                  progress=self.progress.emit, should_cancel=self.isInterruptionRequested,
+                                  max_themes=AUTO_NAMING_LIMIT)
                     except AnalysisCancelled:
-                        self.result.emit(run_id, count)
                         raise
                     except Exception as exc:
                         traceback.print_exc()
                         self.progress.emit(f"Analysis saved; theme naming failed: {exc}")
-                self.result.emit(run_id, count)
+                    else:
+                        if not attempt or attempt.get('status') != 'skipped_large_run':
+                            self.naming_complete.emit(run_id)
         except AnalysisCancelled:
             self.cancelled.emit()
         except Exception as exc:
@@ -94,7 +142,8 @@ class AnalysisWorker(QThread):
             self.failed.emit(str(exc))
 
 
-class ImportWorker(QThread):
+class ImportWorker(WorkerThread):
+    """Import files one at a time, emitting an ImportOutcome for each. Stops between files on interrupt."""
     result = Signal(object)
 
     def __init__(self, directory: Path, files: list[Path], parent=None):
@@ -109,56 +158,67 @@ class ImportWorker(QThread):
             self.result.emit(import_document(self.directory, path))
 
 
-class SegmentWorker(QThread):
-    result = Signal(str, int)
-    failed = Signal(str)
-
-    def __init__(self, directory: Path, unit: str, parent=None, document_ids=None):
-        super().__init__(parent)
-        self.directory = directory
-        self.unit = unit
-        self.document_ids = list(document_ids) if document_ids is not None else None
-
-    def run(self):
-        try:
-            run_id, count = create_segmentation_run(
-                self.directory, self.unit, document_ids=self.document_ids,
-                should_cancel=self.isInterruptionRequested)
-            self.result.emit(run_id, count)
-        except SegmentationCancelled:
-            pass
-        except Exception as exc:
-            traceback.print_exc()
-            self.failed.emit(str(exc))
-
-
 class MainWindow(QMainWindow):
+    """Top-level window: start screen (Hub) and the project page with its tabs.
+
+    Tabs: Documents, Overview, Research Workspace, Visualizations, Project guide.
+    The window owns all background work. Only one long task runs at a time
+    (stored in self._analysis_worker, which also holds visualization, export
+    and refinement workers); `busy` is what every action checks first.
+
+    Typical flow:
+      create()/open() -> _show_project() -> import_files() -> start_analysis()
+      -> AnalysisWorker -> analysis_ready() -> Overview/Workspace refresh
+    """
     def __init__(self):
         super().__init__()
         self.project: Project | None = None
         self._worker: ImportWorker | None = None
-        self._segment_worker: SegmentWorker | None = None
-        self._segment_run_id: str | None = None
+        self.analysis_unit = "Standard passages"
         self._analysis_worker = None
         self._ollama_worker = None
         self.analysis_settings = AnalysisSettings()
         self._close_after_analysis = False
+        self._has_removed = False
         self.setWindowTitle("Topic Model Tool")
         self.resize(1200, 850)
+        from PySide6.QtWidgets import QStackedWidget
+        from qualitative_themes.gui.hub import Hub
+        self.pages = QStackedWidget()
+        self.setCentralWidget(self.pages)
+        self.hub = Hub()
+        self.hub.new_requested.connect(self.create)
+        self.hub.practice_requested.connect(self.start_practice)
+        self.hub.open_requested.connect(self.open)
+        self.hub.restore_requested.connect(self.restore_project_backup)
+        self.hub.recent_requested.connect(self.open_recent)
+        self.hub.setup.repair_requested.connect(self.repair_setup)
+        self.hub.setup.add_model_requested.connect(self.add_model_pack)
+        self.pages.addWidget(self.hub)
         root = QWidget()
-        self.setCentralWidget(root)
+        self.project_page = root
+        self.pages.addWidget(root)
         layout = QVBoxLayout(root)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(6)
         title = QLabel("Topic Model Tool")
         title.setObjectName("applicationTitle")
         header_row = QHBoxLayout()
+        self.home_button = QPushButton("← Home")
+        self.home_button.setToolTip("Back to the start screen: recent projects and local setup")
+        self.home_button.clicked.connect(self.show_hub)
+        header_row.addWidget(self.home_button)
         header_row.addWidget(title)
         self.status = QLabel("Create or open a project to begin.")
         self.status.setObjectName("applicationStatus")
         self.status.setWordWrap(True)
         self.status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         header_row.addWidget(self.status, 1)
+        self.offline_badge = QLabel("Offline · nothing leaves this computer")
+        self.offline_badge.setObjectName("offlineBadge")
+        self.offline_badge.setToolTip("The app makes no network requests. The local AI engine only accepts "
+                                      "connections from this computer.")
+        header_row.addWidget(self.offline_badge)
         layout.addLayout(header_row)
         self.task_progress = TaskProgress()
         self.task_progress.cancel_requested.connect(self.cancel_analysis)
@@ -170,21 +230,29 @@ class MainWindow(QMainWindow):
         documents_tab = QWidget()
         tab_layout = QVBoxLayout(documents_tab)
         self.tabs.addTab(documents_tab, "Documents")
+        from qualitative_themes.gui.overview import OverviewTab
+        self.overview = OverviewTab()
+        self.overview.start_reading.connect(self.open_guided_reading)
+        self.overview.guided_reading.connect(lambda: self.open_guided_reading(None))
+        self.overview.open_cell.connect(self.open_overview_cell)
+        self.tabs.addTab(self.overview, "Overview")
         self.workspace = CodingWorkspace()
         self.tabs.addTab(self.workspace, "Research Workspace")
+        self.workspace.run_choice.currentIndexChanged.connect(self.sync_overview_run)
+        self.workspace.search_requested.connect(self.open_search)
+        from PySide6.QtGui import QKeySequence, QShortcut
+        QShortcut(QKeySequence("Ctrl+Shift+F"), self, activated=self.open_search)
         self.visualizations = VisualizationTab()
         self.tabs.addTab(self.visualizations, "Visualizations")
         self.visualizations.build_requested.connect(self.start_visualizations)
         self.visualizations.cancel_requested.connect(self.cancel_analysis)
         self.visualizations.evidence_requested.connect(self.open_visualization_evidence)
         self.tabs.currentChanged.connect(self.refresh_visualization_runs)
+        from qualitative_themes.gui.project_guide import ProjectGuide
+        self.project_guide = ProjectGuide()
+        self.project_guide.action_requested.connect(self.guide_action)
+        self.tabs.addTab(self.project_guide, 'Project guide')
         actions = QHBoxLayout()
-       
-        # ---> ADD THIS: How-To Guide Button <---
-        self.help_button = QPushButton("📖 How-To Guide")
-        self.help_button.setToolTip("Open a quick beginner walkthrough of how to use the tool.")
-        self.help_button.clicked.connect(self.show_how_to_dialog)
-        actions.addWidget(self.help_button)
 
         # Buttons for creating/opening projects and importing documents
         create = QPushButton("Create Project")
@@ -198,22 +266,6 @@ class MainWindow(QMainWindow):
         self.import_button.clicked.connect(self.import_files)
         actions.addWidget(self.import_button)
 
-        # Buttons sections for previewing different chunking methods
-        self.unit_selector = QComboBox()
-        self.unit_selector.addItems(UNITS)
-        self.unit_selector.setCurrentText("Standard passages")
-        self.unit_selector.setToolTip("Short passages reveal specific ideas; long passages retain more context.")
-        actions.addWidget(self.unit_selector)
-        self.segment_button = QPushButton("Preview Passages")
-        self.segment_button.setEnabled(False)
-        self.segment_button.clicked.connect(self.preview_passages)
-        self.segment_button.setToolTip("Preview the selected documents. Ctrl/Shift selects several; the current document opens first.")
-        actions.addWidget(self.segment_button)
-        self.preview_all_button = QPushButton("Preview all documents")
-        self.preview_all_button.setEnabled(False)
-        self.preview_all_button.setToolTip("Preview every available imported document, using the current passage size.")
-        self.preview_all_button.clicked.connect(lambda: self.preview_passages(all_documents=True))
-        actions.addWidget(self.preview_all_button)
         actions.addStretch()
         tab_layout.addLayout(actions)
 
@@ -224,12 +276,6 @@ class MainWindow(QMainWindow):
         self.analyze_button.setProperty("primary", True)
         self.analyze_button.setEnabled(False)
         analysis_actions.addWidget(self.analyze_button)
-
-        # Temporary thing to download sentence embedding model 
-        self.download_button = QPushButton("Download model (one-time setup)")
-        self.download_button.clicked.connect(lambda: self.start_analysis(download=True))
-        self.download_button.setEnabled(False)
-        analysis_actions.addWidget(self.download_button)
 
         # Cancel an analysis
         self.cancel_analysis_button = QPushButton("Cancel")
@@ -260,7 +306,6 @@ class MainWindow(QMainWindow):
         self.document_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.document_list.setToolTip("Use Ctrl/Shift to select documents. Analyze fits one model across all selected documents.")
         self.document_list.currentItemChanged.connect(self.show_document)
-        self.document_list.itemSelectionChanged.connect(self.clear_passage_preview)
         self.document_list.itemSelectionChanged.connect(self.update_document_actions)
         left_lay.addWidget(self.document_list)
         selection_actions = QHBoxLayout()
@@ -290,22 +335,13 @@ class MainWindow(QMainWindow):
         self.preview_title = QLabel("Import documents to preview extracted text.")
         right_lay.addWidget(self.preview_title)
 
-        # Chunking passage preview sections
+        # Extracted text of the current document
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
         right_lay.addWidget(self.preview)
         self.contents.addWidget(right)
         self.contents.setStretchFactor(1, 3)
         tab_layout.addWidget(self.contents, 1)
-        tab_layout.addWidget(QLabel("Passage preview (exact source offsets)"))
-        self.segment_list = QListWidget()
-        self.segment_list.setMaximumHeight(125)
-        self.segment_list.currentItemChanged.connect(self.show_segment)
-        tab_layout.addWidget(self.segment_list)
-        self.segment_excerpt = QPlainTextEdit()
-        self.segment_excerpt.setReadOnly(True)
-        self.segment_excerpt.setMaximumHeight(105)
-        tab_layout.addWidget(self.segment_excerpt)
         self.import_status = QLabel("")
         self.import_status.setWordWrap(True)
         tab_layout.addWidget(self.import_status)
@@ -313,74 +349,162 @@ class MainWindow(QMainWindow):
         self.import_log.setMaximumHeight(105)
         self.import_log.setAccessibleName("Document import results")
         tab_layout.addWidget(self.import_log)
+        self.hub.refresh_setup()
+
+        project_menu = self.menuBar().addMenu("Project")
+        self.backup_action = project_menu.addAction("Back up project…", self.back_up_project)
+        self.backup_action.setEnabled(False)
+        project_menu.addAction("Restore project backup…", self.restore_project_backup)
+        from qualitative_themes.gui.recovery import RecoveryController
+        self.recovery = RecoveryController(self, project_menu)
 
 
     # Functions
+    @property
+    def busy(self) -> bool:
+        """True while any background task runs; every action checks this one flag."""
+        return bool(self._analysis_worker or self._worker or self._ollama_worker)
+
+    def show_hub(self):
+        self.hub.reload_recent()
+        self.hub.refresh_setup()
+        self.pages.setCurrentWidget(self.hub)
+
+    def start_practice(self):
+        if self.busy:
+            QMessageBox.information(self, 'Task in progress', 'Finish the current task before opening a practice project.')
+            return
+        if not self.flush_comments():
+            return
+        from qualitative_themes.storage.practice import create_practice_project
+        try:
+            self._show_project(create_practice_project())
+            self.tabs.setCurrentWidget(self.project_guide)
+        except Exception as exc:
+            traceback.print_exc()
+            QMessageBox.warning(self, 'Could not create practice project', str(exc))
+
+    def guide_action(self, action):
+        if not self.project:
+            return
+        if action == 'practice':
+            self.start_practice()
+        elif action == 'add':
+            self.tabs.setCurrentIndex(0)
+            self.import_button.click()
+        elif action in {'check', 'topics'}:
+            if action == 'topics' and self.workspace.run_id:
+                self.tabs.setCurrentWidget(self.overview)
+            else:
+                self.tabs.setCurrentIndex(0)
+                if self.document_list.count() and not self.document_list.selectedItems():
+                    self.document_list.setCurrentRow(0)
+                self.document_list.setFocus()
+        else:
+            self.tabs.setCurrentWidget(self.workspace)
+            if action == 'export':
+                self.workspace.export_button.setFocus()
+
+    def open_recent(self, path):
+        if self.busy:
+            QMessageBox.information(self, "Task in progress", "Finish the current task before switching projects.")
+            return
+        from qualitative_themes.runtime import app_settings
+        try:
+            self._show_project(open_project(Path(path)))
+        except Exception as exc:
+            traceback.print_exc()
+            if QMessageBox.question(self, "Could not open project",
+                    f"{exc}\n\nThe folder may have been moved or renamed. Remove it from recent projects?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+                app_settings.forget_project(Path(path))
+                self.hub.reload_recent()
+
+    def repair_setup(self):
+        """Reinstall bundled model packs and restart the engine, in the background."""
+        if getattr(self, "_engine_worker", None):
+            return
+        from qualitative_themes.runtime.engine import get_engine
+        get_engine().stop()
+        self.hub.refresh_setup("Checking and repairing local setup…")
+        self.start_local_services()
+
+    def add_model_pack(self):
+        if getattr(self, "_pack_worker", None):
+            return
+        from qualitative_themes.runtime.model_pack import find_downloaded_packs
+        found = find_downloaded_packs()
+        start = str(found[0].parent) if found else str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a theme-naming model pack", start,
+                                              "Theme-naming model pack (*.tmtpack *.tmtpack.001)")
+        if not path:
+            return
+        self._pack_worker = PackInstallWorker(Path(path), self)
+        self._pack_worker.progress.connect(lambda message: self.hub.refresh_setup(message))
+        self._pack_worker.done.connect(self._pack_installed)
+        self._pack_worker.start()
+
+    def _pack_installed(self, ok, message):
+        worker, self._pack_worker = self._pack_worker, None
+        if worker:
+            worker.wait()
+            worker.deleteLater()
+        if not ok:
+            QMessageBox.warning(self, "Could not add the naming model", message)
+        self.hub.refresh_setup(message if ok else None)
+        if ok:
+            self.refresh_ollama_models()
+
     def _show_project(self, project: Project):
+        """Switch the UI to `project` and restore its saved setup and layout.
+
+        Pre: no background task is running (callers check `busy`).
+        Post: every tab points at the new project. Returns early without
+        switching if an unsaved comment draft can't be saved.
+        """
+        if not self.flush_comments():
+            return
+        self.save_reading_position()
         self.project = project
+        self.backup_action.setEnabled(True)
+        self.pages.setCurrentWidget(self.project_page)
+        try:
+            from qualitative_themes.runtime import app_settings
+            app_settings.remember_project(project.directory, project.name)
+        except OSError:
+            traceback.print_exc()
         self.analysis_settings, unit = load_setup(project.directory)
-        self.unit_selector.setCurrentText(unit if unit in UNITS else "Standard passages")
+        self.analysis_unit = unit if unit in UNITS else "Standard passages"
         self.ollama_model_choice.clear()
         if self.analysis_settings.ollama_model:
             self.ollama_model_choice.addItem(self.analysis_settings.ollama_model, self.analysis_settings.ollama_model)
         self.setWindowTitle(f"{project.name} — Topic Model Tool")
         self.status.setText(f"Project: {project.name}\nLocation: {project.directory}")
         self.import_button.setEnabled(True)
-        self.download_button.setEnabled(True)
-        self._segment_run_id = None
-        self.segment_list.clear()
-        self.segment_excerpt.clear()
         self.import_status.setText("Project ready. Import PDF, DOCX, or TXT documents.")
         self.refresh_documents()
         self.workspace.set_project(project.directory)
+        self.overview.set_run(project.directory, self.workspace.run_id)
         self.visualizations.set_project(project.directory)
+        self.recovery.project_changed(project.directory)
+        from qualitative_themes.storage.practice import is_practice_project
+        practice = is_practice_project(project.directory)
+        self.project_guide.set_project(project, practice)
+        if practice or not self.document_list.count():
+            self.tabs.setCurrentWidget(self.project_guide)
+        from qualitative_themes.storage.preferences import load_workspace_view
+        view = load_workspace_view(project.directory)
+        self.workspace.restore_view(view)
+        tab = view.get('tab')
+        if isinstance(tab, str):
+            for index in range(self.tabs.count()):
+                if self.tabs.tabText(index) == tab:
+                    self.tabs.setCurrentIndex(index)
+                    break
         self.update_naming_controls()
 
-
-
-    def show_how_to_dialog(self):
-        """Displays a beginner-friendly How-To guide dialog."""
-        dialog = QDialog()
-        dialog.setWindowTitle("Document Topic Modeling Tool — Beginner Guide")
-        dialog.resize(650, 500)
-        
-        # Correct PySide6 layout attachment
-        layout = QVBoxLayout()
-        dialog.setLayout(layout)
-        
-        browser = QTextBrowser()
-        browser.setHtml("""
-            <h2>Welcome to the Document Topic Modeling Tool!</h2>
-            <p>If you're new here, follow these simple steps to explore themes in your documents:</p>
-            <ol>
-                <b><li>Create or Open a Project:</li></b>
-                <p>Click <b>Create Project</b> to start a new workspace folder, or <b>Open Project</b> to load existing work.</p>
-                
-                <b><li>Import Documents:</li></b>
-                <p>Click <b>Import Documents</b> to add text-based PDFs, Word (.docx) files, or text files (.txt).</p>
-                
-                <b><li>Download the Model (First Time Only):</li></b>
-                <p>While connected to the internet, click <b>Download model (one-time setup)</b> to fetch the required local sentence-embedding model.</p>
-                
-                <b><li>Preview Passages & Run Analysis:</li></b>
-                <p>Select your documents from the list on the left, choose your passage chunking size, and click <b>Analyze selected documents</b>.</p>
-                
-                <b><li>Explore the Research Workspace:</li></b>
-                <p>Switch to the <i>Research Workspace</i> tab to inspect discovered themes, assign codes, merge groups, and review highlights.</p>
-            </ol>
-            <p><b>Need Ollama?</b> Run <code>ollama pull llama3.1</code> locally if you want AI-generated readable theme names!</p>
-        """)
-        layout.addWidget(browser)
-        
-        close_btn = QPushButton("Got it!")
-        close_btn.clicked.connect(dialog.accept)
-        layout.addWidget(close_btn)
-        
-        dialog.exec()
-
-
     def update_naming_controls(self, _index=-1):
-        busy = bool(self._analysis_worker or self._worker or self._segment_worker or self._ollama_worker)
+        busy = self.busy
         self.visualizations.set_busy(busy)
         self.rename_run_button.setEnabled(bool(self.project and self.workspace.run_id) and not busy)
         self.workspace.refine_button.setEnabled(bool(self.project and self.workspace.run_id) and not busy)
@@ -394,20 +518,18 @@ class MainWindow(QMainWindow):
         self.update_document_actions()
 
     def update_document_actions(self):
-        busy = bool(self._analysis_worker or self._worker or self._segment_worker or self._ollama_worker)
+        busy = self.busy
         total = self.document_list.count()
         selected = len(self.document_list.selectedItems())
         self.select_all_documents_button.setEnabled(bool(self.project and total) and not busy)
         self.clear_document_selection_button.setEnabled(bool(self.project and selected) and not busy)
         self.document_selection_count.setText(f"{selected:,} of {total:,} documents selected")
-        self.preview_all_button.setEnabled(bool(self.project and self.document_list.count()) and not busy)
         self.remove_documents_button.setEnabled(bool(self.project and self.document_list.selectedItems()) and not busy)
-        removed = bool(self.project and any(status == "removed" for _, _, status in
-                       list_documents(self.project.directory, include_removed=True)))
-        self.restore_documents_button.setEnabled(removed and not busy)
+        # Cached in refresh_documents: no database query on every selection change.
+        self.restore_documents_button.setEnabled(bool(self.project and self._has_removed) and not busy)
 
     def remove_selected_documents(self):
-        if not self.project or self._analysis_worker or self._worker or self._segment_worker or self._ollama_worker:
+        if not self.project or self.busy:
             return
         items = self.document_list.selectedItems()
         if not items:
@@ -436,7 +558,7 @@ class MainWindow(QMainWindow):
         self.import_status.setText(f"Removed {count} document(s) from the import list. Saved analyses, coding, and notes remain available.")
 
     def restore_removed_documents(self):
-        if not self.project or self._analysis_worker or self._worker or self._segment_worker or self._ollama_worker:
+        if not self.project or self.busy:
             return
         rows = [row for row in list_documents(self.project.directory, include_removed=True) if row[2] == "removed"]
         if not rows:
@@ -475,15 +597,45 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Could not restore documents", str(exc))
         dialog.deleteLater()
 
+    def start_local_services(self):
+        """Start the bundled engine in the background; the UI stays usable meanwhile.
+
+        Called once after the window is shown. engine_started() then refreshes the
+        model list and the start screen's setup panel.
+        """
+        if getattr(self, "_engine_worker", None):
+            return
+        self.ollama_status.setText("Starting the local AI engine…")
+        self._engine_worker = EngineStartWorker(self)
+        self._engine_worker.ready.connect(self.engine_started)
+        self._engine_worker.finished.connect(self._engine_worker_finished)
+        self._engine_worker.start()
+
+    def engine_started(self, status):
+        self.engine_status = status
+        self.ollama_status.setText(status.message)
+        if status.state == "running":
+            self.refresh_ollama_models()
+        hub = getattr(self, "hub", None)
+        if hub is not None:
+            hub.refresh_setup()
+
+    def _engine_worker_finished(self):
+        worker = self._engine_worker
+        if worker:
+            worker.wait()
+            worker.deleteLater()
+        self._engine_worker = None
+
     def refresh_ollama_models(self):
-        if self._analysis_worker or self._worker or self._segment_worker or self._ollama_worker:
+        if self.busy:
             return
         self._ollama_worker = OllamaModelsWorker(self)
         self._ollama_worker.result.connect(self.models_ready)
         self._ollama_worker.failed.connect(self.models_failed)
         self._ollama_worker.finished.connect(self.models_finished)
         self.ollama_status.setText("Checking local Ollama…")
-        for button in [self.import_button, self.segment_button, self.analyze_button, self.download_button]:
+        for button in [self.import_button, self.analyze_button]:
             button.setEnabled(False)
         self.update_naming_controls()
         self._ollama_worker.start()
@@ -494,6 +646,9 @@ class MainWindow(QMainWindow):
         for model in models:
             self.ollama_model_choice.addItem(model["name"], model["name"])
         index = self.ollama_model_choice.findData(old)
+        if index < 0:
+            from qualitative_themes.analysis.settings import DEFAULT_NAMING_MODEL
+            index = self.ollama_model_choice.findData(DEFAULT_NAMING_MODEL)
         if index >= 0:
             self.ollama_model_choice.setCurrentIndex(index)
         self.ollama_status.setText(f"{len(models)} local model(s) found." if models else
@@ -510,15 +665,21 @@ class MainWindow(QMainWindow):
             worker.deleteLater()
         self._ollama_worker = None
         self.import_button.setEnabled(self.project is not None)
-        self.segment_button.setEnabled(bool(self.project and self.document_list.count()))
         self.analyze_button.setEnabled(bool(self.project and self.document_list.count()))
-        self.download_button.setEnabled(self.project is not None)
         self.update_naming_controls()
         if self._close_after_analysis:
             self.close()
 
     def name_selected_run(self):
         if self.workspace.run_id:
+            count, _ = result_summary(self.project.directory, self.workspace.run_id)
+            if count > AUTO_NAMING_LIMIT and QMessageBox.question(
+                    self, 'Many topics to name',
+                    f'This analysis has {count} topics. Naming them may take a long time. '
+                    'You can keep keyword names or reduce the topics first. Request names for all of them?',
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                return
             self.start_refinement(operation="names")
 
     def refresh_documents(self, select_id: str | None = None):
@@ -526,7 +687,10 @@ class MainWindow(QMainWindow):
         self.preview.clear()
         self.preview_title.setText("Import documents to preview extracted text.")
         if self.project is None:
+            self._has_removed = False
             return
+        self._has_removed = any(status == "removed" for _, _, status in
+                                list_documents(self.project.directory, include_removed=True))
         for document_id, name, status in list_documents(self.project.directory):
             from PySide6.QtCore import Qt
             from PySide6.QtWidgets import QListWidgetItem
@@ -537,10 +701,7 @@ class MainWindow(QMainWindow):
                 self.document_list.setCurrentItem(item)
         if self.document_list.count() and self.document_list.currentItem() is None:
             self.document_list.setCurrentRow(0)
-        self.segment_button.setEnabled(self.document_list.count() > 0 and self._worker is None
-                                       and self._segment_worker is None)
-        self.analyze_button.setEnabled(self.document_list.count() > 0 and not self._analysis_worker
-                                       and not self._worker and not self._segment_worker)
+        self.analyze_button.setEnabled(self.document_list.count() > 0 and not self.busy)
         self.update_document_actions()
 
     def show_document(self, current, _previous=None):
@@ -555,16 +716,14 @@ class MainWindow(QMainWindow):
         self.preview.setPlainText(text)
 
     def import_files(self):
-        if self.project is None or self._worker is not None or self._analysis_worker or self._segment_worker or self._ollama_worker:
+        if self.project is None or self.busy:
             return
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Import documents", "", "Documents (*.pdf *.docx *.txt)")
         if not paths:
             return
         self.import_button.setEnabled(False)
-        self.segment_button.setEnabled(False)
         self.analyze_button.setEnabled(False)
-        self.download_button.setEnabled(False)
         self.import_status.setText(f"Importing {len(paths)} file(s)…")
         self._outcomes: list[ImportOutcome] = []
         self.import_log.clear()
@@ -582,9 +741,6 @@ class MainWindow(QMainWindow):
         self.import_status.setText(details)
         self.import_log.addItem(details)
         if outcome.status in {"imported", "restored"}:
-            self._segment_run_id = None
-            self.segment_list.clear()
-            self.segment_excerpt.clear()
             self.refresh_documents(outcome.document_id)
             self.workspace.reload_documents()
 
@@ -597,9 +753,7 @@ class MainWindow(QMainWindow):
         self._worker = None
         self.update_naming_controls()
         self.import_button.setEnabled(self.project is not None)
-        self.segment_button.setEnabled(self.document_list.count() > 0)
         self.analyze_button.setEnabled(self.document_list.count() > 0)
-        self.download_button.setEnabled(self.project is not None)
         imported = sum(x.status == "imported" for x in self._outcomes)
         restored = sum(x.status == "restored" for x in self._outcomes)
         duplicates = sum(x.status == "duplicate" for x in self._outcomes)
@@ -609,6 +763,22 @@ class MainWindow(QMainWindow):
             " ".join(f"{x.filename}: {x.message}" for x in failures))
 
     def closeEvent(self, event):
+        """Don't close until background work is safe to drop.
+
+        An active analysis is cancelled first and the window closes itself from
+        analysis_finished() (via _close_after_analysis). Unsaved comment drafts
+        are flushed or the close is refused.
+        """
+        if self.recovery.running:
+            event.ignore()
+            return
+        if not self.flush_comments():
+            event.ignore()
+            return
+        for name in ("_engine_worker", "_pack_worker"):
+            worker = getattr(self, name, None)
+            if worker:
+                worker.wait()
         if self._ollama_worker:
             self._close_after_analysis = True
             event.ignore()
@@ -622,97 +792,100 @@ class MainWindow(QMainWindow):
         if self._worker and self._worker.isRunning():
             self._worker.requestInterruption()
             self._worker.wait()
-        if self._segment_worker and self._segment_worker.isRunning():
-            self._segment_worker.requestInterruption()
-            self._segment_worker.wait()
         self.visualizations.dispose()
+        self.save_reading_position()
+        self.recovery.timer.stop()
         super().closeEvent(event)
 
-    def clear_passage_preview(self):
-        if self._segment_worker:
+    def flush_comments(self):
+        if self.workspace.comments_panel.flush_pending():
+            return True
+        QMessageBox.warning(self, "Comment draft not saved",
+                            "Your comment could not be saved. Return to Comments and try again before leaving or backing up.")
+        return False
+
+    def save_reading_position(self):
+        if not self.project or self.workspace.directory != self.project.directory:
             return
-        self._segment_run_id = None
-        self.segment_list.clear()
-        self.segment_excerpt.clear()
+        from qualitative_themes.storage.preferences import save_workspace_view
+        try:
+            view = self.workspace.capture_view()
+            view['tab'] = self.tabs.tabText(self.tabs.currentIndex())
+            save_workspace_view(self.project.directory, view)
+        except Exception:
+            # UI preferences must not prevent closing or opening a research project.
+            traceback.print_exc()
 
-    def preview_passages(self, _checked=False, all_documents=False):
-        if not self.project or self._worker or self._segment_worker or self._analysis_worker or self._ollama_worker:
+    def back_up_project(self):
+        if not self.project:
             return
-        documents = ([row[0] for row in list_documents(self.project.directory) if row[2] == "ready"]
-                     if all_documents else [item.data(Qt.ItemDataRole.UserRole) for item in self.document_list.selectedItems()])
-        if not documents:
-            self.import_status.setText("Import documents to preview." if all_documents else "Select documents to preview (Ctrl/Shift selects several).")
+        if self.busy:
+            QMessageBox.information(self, "Task in progress", "Finish the current task before backing up.")
             return
-        self.clear_passage_preview()
-        if self.unit_selector.currentText() == "Whole document":
-            lengths = []
-            for doc in documents:
-                name, text, _ = get_document(self.project.directory, doc)
-                lengths.append((name, len(text)))
-            if any(length > 30000 for _name, length in lengths):
-                QMessageBox.information(
-                    self, "Long documents",
-                    "Some documents are long. Treating each entire document as one passage "
-                    "may hide specific ideas; Standard passages may work better.")
-        self.segment_button.setEnabled(False)
-        self.import_button.setEnabled(False)
-        self.analyze_button.setEnabled(False)
-        self.download_button.setEnabled(False)
-        self.document_list.setEnabled(False)
-        self.unit_selector.setEnabled(False)
-        self._preview_scope = "all available" if all_documents else "selected"
-        self.import_status.setText(f"Preparing passage preview for {self._preview_scope} documents…")
-        self._segment_worker = SegmentWorker(self.project.directory,
-                                             self.unit_selector.currentText(), self, document_ids=documents)
-        self.update_naming_controls()
-        self._segment_worker.result.connect(self._on_segments_ready)
-        self._segment_worker.failed.connect(self._on_segments_failed)
-        self._segment_worker.finished.connect(self._on_segments_finished)
-        self._segment_worker.start()
+        if not self.flush_comments():
+            return
+        from datetime import datetime
+        from qualitative_themes.storage.backup import create_backup
+        from qualitative_themes.gui.project_backup import transfer
+        suggested = self.project.directory.parent / f"project-backup-{datetime.now():%Y%m%d-%H%M%S}.tmtbackup"
+        path, _ = QFileDialog.getSaveFileName(self, "Save project backup outside the project folder",
+                                             str(suggested), "Project backup (*.tmtbackup)")
+        if not path:
+            return
+        if not Path(path).suffix:
+            path += '.tmtbackup'
+        try:
+            transfer(self, "Backing up project", create_backup, self.project.directory, Path(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not back up project", str(exc))
+            return
+        QMessageBox.information(self, "Backup saved", f"Verified project backup saved to:\n{path}\n\n"
+                                "It includes source documents and saved research work. Store it somewhere appropriate "
+                                "for your data; the backup is not encrypted.")
 
-    def _on_segments_ready(self, run_id: str, count: int):
-        self._segment_run_id = run_id
-        self.segment_list.clear()
-        current = self.document_list.currentItem()
-        focus_doc = current.data(Qt.ItemDataRole.UserRole) if current else None
-        focus_row = None
-        records = list_segments(self.project.directory, run_id)
-        for doc_id, name, ordinal, start, end, excerpt in records:
-            from PySide6.QtWidgets import QListWidgetItem
-            item = QListWidgetItem(f"{name} · passage {ordinal + 1} · [{start}, {end})")
-            item.setData(Qt.ItemDataRole.UserRole, (doc_id, start, end, excerpt))
-            self.segment_list.addItem(item)
-            if focus_row is None and doc_id == focus_doc:
-                focus_row = self.segment_list.count() - 1
-        if count:
-            self.segment_list.setCurrentRow(focus_row if focus_row is not None else 0)
-        self.import_status.setText(
-            f"{count} passages prepared from {len({row[0] for row in records})} {getattr(self, '_preview_scope', 'selected')} document(s) using {self.unit_selector.currentText()}. "
-            "Select one below to inspect its exact extracted text and offsets.")
-
-    def _on_segments_failed(self, message: str):
-        self.import_status.setText(f"Could not prepare passages: {message}")
-
-    def _on_segments_finished(self):
-        worker = self._segment_worker
-        if worker:
-            worker.wait()
-            worker.deleteLater()
-        self._segment_worker = None
-        self.document_list.setEnabled(True)
-        self.unit_selector.setEnabled(True)
-        self.update_naming_controls()
-        self.import_button.setEnabled(self.project is not None)
-        self.segment_button.setEnabled(self.document_list.count() > 0)
-        self.analyze_button.setEnabled(self.document_list.count() > 0)
-        self.download_button.setEnabled(self.project is not None)
+    def restore_project_backup(self, archive=None):
+        if self.busy:
+            QMessageBox.information(self, "Task in progress", "Finish the current task before restoring a backup.")
+            return
+        if not self.flush_comments():
+            return
+        from qualitative_themes.storage.backup import restore_backup
+        from qualitative_themes.gui.project_backup import transfer
+        if isinstance(archive, (str, Path)):
+            path = str(archive)
+        else:
+            path, _ = QFileDialog.getOpenFileName(self, "Choose a project backup", "", "Project backup (*.tmtbackup)")
+        if not path:
+            return
+        parent = QFileDialog.getExistingDirectory(self, "Choose where to create the restored project folder")
+        if not parent:
+            return
+        name, accepted = QInputDialog.getText(self, "Restored project folder", "New folder name:", text="Restored project")
+        if not accepted:
+            return
+        name = name.strip()
+        if not name or name in {'.', '..'} or any(c in name for c in '/\\:*?"<>|') or name.endswith('.'):
+            QMessageBox.warning(self, "Invalid folder name", "Enter a simple folder name without path separators.")
+            return
+        destination = Path(parent) / name
+        try:
+            transfer(self, "Restoring project", restore_backup, Path(path), destination)
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not restore project", str(exc))
+            return
+        if QMessageBox.question(self, "Project restored", f"Restored to:\n{destination}\n\nOpen this copy now?",
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+            try:
+                self._show_project(open_project(destination))
+            except Exception as exc:
+                QMessageBox.warning(self, "Restored but could not open", str(exc))
 
     def refresh_visualization_runs(self, _index=None):
         if self.tabs.currentWidget() == self.visualizations and self.project and not self._analysis_worker:
             self.visualizations.reload_runs(self.workspace.run_id)
 
     def start_visualizations(self):
-        if not self.project or self._analysis_worker or self._worker or self._segment_worker or self._ollama_worker:
+        if not self.project or self.busy:
             return
         selected = self.visualizations.run_choice.currentData()
         if not selected:
@@ -725,7 +898,7 @@ class MainWindow(QMainWindow):
         worker.failed.connect(lambda message: self.visualizations.status.setText("Visualization failed: " + message))
         worker.cancelled.connect(lambda: self.visualizations.status.setText("Visualization cancelled. Saved research is unchanged."))
         worker.finished.connect(self.analysis_finished)
-        for button in [self.import_button, self.segment_button, self.analyze_button, self.download_button]:
+        for button in [self.import_button, self.analyze_button]:
             button.setEnabled(False)
         self.update_naming_controls()
         self.visualizations.cancel_button.setEnabled(True)
@@ -734,7 +907,7 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def open_visualization_evidence(self, run_id, theme_id):
-        if self._analysis_worker or self._worker or self._segment_worker or self._ollama_worker:
+        if self.busy:
             return
         self.workspace.reload_runs(run_id)
         self.workspace.reload_themes(theme_id)
@@ -742,14 +915,14 @@ class MainWindow(QMainWindow):
         self.update_naming_controls()
 
     def show_analysis_history(self):
-        if not self.project or self._analysis_worker or self._worker or self._segment_worker or self._ollama_worker:
+        if not self.project or self.busy:
             return
         dialog = AnalysisHistoryDialog(self.project.directory, self)
         dialog.exec()
         dialog.deleteLater()
 
     def start_research_export(self, kind):
-        if not self.project or self._analysis_worker or self._worker or self._segment_worker or self._ollama_worker:
+        if not self.project or self.busy:
             return
         filters = "Codebook CSV (*.csv);;Codebook JSON (*.json)" if kind == "codebook" else "Coded passages CSV (*.csv)"
         title = "Export codebook" if kind == "codebook" else "Export coded passages"
@@ -774,7 +947,7 @@ class MainWindow(QMainWindow):
         worker.result.connect(lambda filename, count: self.task_status(
             f"Exported {count} {'themes' if kind == 'codebook' else 'unique passage ranges'} to {filename}"))
         worker.finished.connect(self.analysis_finished)
-        for button in [self.import_button, self.segment_button, self.analyze_button, self.download_button]:
+        for button in [self.import_button, self.analyze_button]:
             button.setEnabled(False)
         self.cancel_analysis_button.setEnabled(True)
         self.workspace.cancel_task_button.setEnabled(True)
@@ -784,7 +957,7 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def start_refinement(self, operation=None):
-        if not self.project or not self.workspace.run_id or self._worker or self._segment_worker or self._analysis_worker or self._ollama_worker:
+        if not self.project or not self.workspace.run_id or self.busy:
             return
         try:
             source = load_source(self.project.directory, self.workspace.run_id)
@@ -824,7 +997,7 @@ class MainWindow(QMainWindow):
         worker.cancelled.connect(lambda: self.task_status("Refinement cancelled. Selected analysis and research decisions are unchanged."))
         worker.result.connect(self.refinement_ready)
         worker.finished.connect(self.analysis_finished)
-        for button in [self.import_button, self.segment_button, self.analyze_button, self.download_button]:
+        for button in [self.import_button, self.analyze_button]:
             button.setEnabled(False)
         self.cancel_analysis_button.setEnabled(True)
         self.workspace.cancel_task_button.setEnabled(True)
@@ -854,7 +1027,7 @@ class MainWindow(QMainWindow):
         self.update_naming_controls()
 
     def review_pending_refinement(self):
-        if not self.project or self._analysis_worker or self._worker or self._segment_worker or self._ollama_worker:
+        if not self.project or self.busy:
             return
         proposals = list_proposals(self.project.directory)
         if not proposals:
@@ -866,28 +1039,35 @@ class MainWindow(QMainWindow):
         if ok:
             self.refinement_ready(proposals[displays.index(choice)][0])
 
-    def start_analysis(self, _checked=False, download=False, run_id=None):
-        if not self.project or self._worker or self._segment_worker or self._analysis_worker or self._ollama_worker:
+    def start_analysis(self, _checked=False, run_id=None):
+        """Open the setup dialog and start an AnalysisWorker (or name an existing run if run_id is set).
+
+        Pre: a project is open, nothing else is running, and documents are selected
+        (not needed for naming).
+        Post: the setup is saved to the project before the worker starts, so it's
+        remembered even if the analysis fails.
+        """
+        if not self.project or self.busy:
             return
         documents = [item.data(Qt.ItemDataRole.UserRole) for item in self.document_list.selectedItems()]
-        if not download and not run_id and not documents:
+        if not run_id and not documents:
             self.import_status.setText("Select documents to analyze together (Ctrl/Shift selects several).")
             return
         settings = self.analysis_settings
-        if not download and not run_id:
+        if not run_id:
             chosen = [(item.data(Qt.ItemDataRole.UserRole), item.text()) for item in self.document_list.selectedItems()]
             models = [self.ollama_model_choice.itemData(i) for i in range(self.ollama_model_choice.count())]
             initial = replace(settings, ollama_model=self.ollama_model_choice.currentData() or settings.ollama_model)
             dialog = AnalysisSetupDialog(self.project.directory, chosen, initial,
-                                         self.unit_selector.currentText(), models, self)
+                                         self.analysis_unit, models, self)
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 dialog.deleteLater()
                 return
             settings = dialog.settings()
-            self.unit_selector.setCurrentText(dialog.unit.currentText())
+            self.analysis_unit = dialog.unit.currentText()
             dialog.deleteLater()
             try:
-                save_setup(self.project.directory, settings, self.unit_selector.currentText())
+                save_setup(self.project.directory, settings, self.analysis_unit)
             except Exception as exc:
                 traceback.print_exc()
                 QMessageBox.warning(self, "Could not save setup", str(exc))
@@ -896,8 +1076,8 @@ class MainWindow(QMainWindow):
             if settings.ollama_model and self.ollama_model_choice.findData(settings.ollama_model) < 0:
                 self.ollama_model_choice.addItem(settings.ollama_model, settings.ollama_model)
             self.ollama_model_choice.setCurrentIndex(self.ollama_model_choice.findData(settings.ollama_model))
-        self._analysis_worker = AnalysisWorker(self.project.directory, self.unit_selector.currentText(), documents,
-                                               download=download, parent=self,
+        self._analysis_worker = AnalysisWorker(self.project.directory, self.analysis_unit, documents,
+                                               parent=self,
                                                name_themes=settings.name_themes,
                                                ollama_model=(self.ollama_model_choice.currentData() if run_id else settings.ollama_model),
                                                run_id=run_id, settings=settings)
@@ -906,9 +1086,11 @@ class MainWindow(QMainWindow):
         worker.progress.connect(self.task_status)
         worker.failed.connect(lambda message: self.task_status("Analysis/setup failed: " + message))
         worker.cancelled.connect(lambda: self.task_status("Cancelled. Completed analysis and researcher work remain saved."))
-        worker.result.connect(self.analysis_ready)
+        worker.result.connect(lambda run, count: self.analysis_ready(run, count)
+                              if self.worker_matches_project(worker) else None)
+        worker.naming_complete.connect(lambda run: self.naming_ready(worker, run))
         worker.finished.connect(self.analysis_finished)
-        for button in [self.import_button, self.segment_button, self.analyze_button, self.download_button]:
+        for button in [self.import_button, self.analyze_button]:
             button.setEnabled(False)
         self.cancel_analysis_button.setEnabled(True)
         self.workspace.cancel_task_button.setEnabled(True)
@@ -917,17 +1099,19 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def track_task(self, worker):
+        """Wire a worker's progress/failed/cancelled signals into the shared progress bar."""
         titles = {"VisualizationWorker": "Preparing visualizations", "ResearchExportWorker": "Exporting research",
                   "RefinementWorker": "Preparing refinement"}
         title = titles.get(type(worker).__name__, "Analyzing documents")
         if isinstance(worker, AnalysisWorker):
-            title = "Downloading embedding model" if worker.download else ("Naming themes" if worker.run_id else title)
+            title = "Naming themes" if worker.run_id else title
         self.task_progress.begin(title)
         worker.progress.connect(self.task_progress.update_stage)
         worker.failed.connect(lambda message: self.task_progress.terminal("failed", "Failed · " + message))
         worker.cancelled.connect(lambda: self.task_progress.terminal("cancelled", "Cancelled · Any completed analysis and researcher work remain saved."))
 
     def cancel_analysis(self):
+        """Ask the current worker to stop. It stops at its next check_cancel(), not immediately."""
         if self._analysis_worker:
             self._analysis_worker.requestInterruption()
             self.task_progress.request_cancel()
@@ -941,17 +1125,76 @@ class MainWindow(QMainWindow):
         self.import_status.setText(message)
         self.workspace.status.setText(message)
 
+    def sync_overview_run(self, _index=-1):
+        if self.project:
+            self.overview.set_run(self.project.directory, self.workspace.run_id)
+
+    def open_guided_reading(self, theme_id=None):
+        if not self.project or not self.overview.data:
+            return
+        from qualitative_themes.gui.reading_mode import GuidedReadingDialog
+        if getattr(self, "_reading", None) is not None:
+            self._reading.close()
+            self._reading.deleteLater()
+        self._reading = GuidedReadingDialog(self.project.directory, self.workspace.run_id,
+                                            self.overview.data["themes"], theme_id, self)
+        self._reading.open_range.connect(self.open_reading_passage)
+        self._reading.finished.connect(lambda _r: self.overview.set_run(self.project.directory, self.workspace.run_id))
+        self._reading.show()
+
+    def open_reading_passage(self, document_id, start, end, theme_id):
+        self.tabs.setCurrentWidget(self.workspace)
+        self.workspace.open_passage(theme_id, document_id, start, end)
+
+    def open_overview_cell(self, theme_id, document_id):
+        self.tabs.setCurrentWidget(self.workspace)
+        self.workspace.open_group(theme_id, document_id)
+
+    def open_search(self):
+        if not self.project:
+            return
+        from qualitative_themes.gui.search_dialog import SearchDialog
+        if getattr(self, "_search", None) is None:
+            self._search = SearchDialog(self.project.directory, self.workspace.run_id, self)
+            self._search.open_result.connect(self.open_search_result)
+            self._search_project = self.project.directory
+        elif self._search_project != self.project.directory:
+            self._search.deleteLater()
+            self._search = None
+            return self.open_search()
+        self._search.run_id = self.workspace.run_id
+        self._search.show()
+        self._search.raise_()
+        self._search.field.setFocus()
+        self._search.field.selectAll()
+
+    def open_search_result(self, document_id, start, end):
+        self.tabs.setCurrentWidget(self.workspace)
+        self.workspace.open_location(document_id, start, end)
+
     def analysis_ready(self, run_id, count):
         self.workspace.reload_runs(run_id)
-        self.tabs.setCurrentWidget(self.workspace)
+        self.overview.set_run(self.project.directory, run_id)
+        self.tabs.setCurrentWidget(self.overview)
         themes, uncategorized = result_summary(self.project.directory, run_id)
         self.task_status(f"Analysis complete: {themes} discovered themes · {count} passages · {uncategorized} Uncategorized passages.")
         self.workspace.naming_status.setPlainText(labeling_report(self.project.directory, run_id))
-        if self._analysis_worker and self._analysis_worker.run_id:
-            self.import_status.setText("Theme naming finished. See Theme naming details in Research Workspace.")
-            self.workspace.status.setText("Theme naming finished. Open Theme naming details for results and fallback reasons.")
+
+    def worker_matches_project(self, worker):
+        """Guard against results from a worker that started on a different project."""
+        return (worker is self._analysis_worker and self.project is not None
+                and Path(worker.directory).resolve() == self.project.directory.resolve())
+
+    def naming_ready(self, worker, run_id):
+        if not self.worker_matches_project(worker) or self.workspace.run_id != run_id:
+            return
+        self.workspace.refresh_theme_labels()
+        self.workspace.naming_status.setPlainText(labeling_report(self.project.directory, run_id))
+        self.overview.set_run(self.project.directory, run_id)
+        self.task_status('Theme naming finished. Your reading position and researcher edits are preserved.')
 
     def analysis_finished(self):
+        """Clean up after any worker in the _analysis_worker slot (success, failure or cancel)."""
         self.task_progress.finish()
         worker = self._analysis_worker
         if worker:
@@ -960,50 +1203,32 @@ class MainWindow(QMainWindow):
         self._analysis_worker = None
         self.update_naming_controls()
         self.import_button.setEnabled(self.project is not None)
-        self.segment_button.setEnabled(self.document_list.count() > 0)
         self.analyze_button.setEnabled(self.document_list.count() > 0)
-        self.download_button.setEnabled(self.project is not None)
         self.cancel_analysis_button.setEnabled(False)
         self.workspace.cancel_task_button.setEnabled(False)
         if self._close_after_analysis:
             self.close()
 
-    def show_segment(self, current, _previous=None):
-        if not current:
-            return
-        doc_id, start, end, excerpt = current.data(Qt.ItemDataRole.UserRole)
-        # SQLite substr and Python slicing should agree for saved Unicode text.
-        _, full_text, _ = get_document(self.project.directory, doc_id)
-        actual = full_text[start:end]
-        if excerpt != actual:
-            self.segment_excerpt.setPlainText("Passage preview mismatch; check project data.")
-            return
-        self.segment_excerpt.setPlainText(actual)
-        for row in range(self.document_list.count()):
-            item = self.document_list.item(row)
-            if item.data(Qt.ItemDataRole.UserRole) == doc_id:
-                self.document_list.setCurrentItem(item, QItemSelectionModel.SelectionFlag.NoUpdate)
-                break
-
     def create(self):
-        if self._worker is not None or self._segment_worker is not None or self._analysis_worker or self._ollama_worker:
+        if self.busy:
             QMessageBox.information(self, "Task in progress", "Finish the current task before switching projects.")
             return
-        folder = QFileDialog.getExistingDirectory(self, "Choose an empty project folder")
-        if not folder:
-            return
-        from PySide6.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getText(self, "Project name", "Name", QLineEdit.EchoMode.Normal, Path(folder).name)
-        if not ok:
-            return
-        try:
-            self._show_project(create_project(Path(folder), name))
-        except Exception as exc:
-            traceback.print_exc()
-            QMessageBox.warning(self, "Could not create project", str(exc))
+        from qualitative_themes.gui.new_project import NewProjectDialog
+        dialog = NewProjectDialog(self)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        project = dialog.project
+        dialog.deleteLater()
+        if project is not None:
+            self._show_project(project)
+            self.tabs.setCurrentIndex(0)
+            if self.document_list.count():
+                self.import_status.setText("Documents imported. Check the extracted text on the right, then select "
+                                           "documents and choose Analyze.")
+        elif accepted:
+            self.show_hub()
 
     def open(self):
-        if self._worker is not None or self._segment_worker is not None or self._analysis_worker or self._ollama_worker:
+        if self.busy:
             QMessageBox.information(self, "Task in progress", "Finish the current task before switching projects.")
             return
         folder = QFileDialog.getExistingDirectory(self, "Open a project folder")
