@@ -50,7 +50,7 @@ jobs:
           $version = "${{ github.ref_name }}".TrimStart("v")
           if (-not $version -or $version -eq "main") { $version = "0.0.0-dev" }
           iscc "/DAppVersion=$version" packaging\windows\installer.iss
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with: { name: windows, path: "dist/*.exe" }
 
   macos:
@@ -76,8 +76,9 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           [ "$version" = "main" ] && version="0.0.0-dev"
-          packaging/macos/build_dmg.sh "$version" "${{ matrix.arch }}"
-      - uses: actions/upload-artifact@v4
+          # Call through bash: commits from Windows don't keep the script's executable bit.
+          bash packaging/macos/build_dmg.sh "$version" "${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v6
         with: { name: "macos-${{ matrix.arch }}", path: "dist/*.dmg" }
 
   model-pack:
@@ -95,7 +96,7 @@ jobs:
       - run: >
           python scripts/build_model_pack.py --model "${{ env.NAMING_MODEL }}"
           --license "Llama 3.1 Community License" --license-file llama-license.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: model-pack
           path: |
@@ -109,7 +110,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { path: artifacts, merge-multiple: true }
       - name: Refuse files GitHub would reject (2 GiB per file)
         run: |
