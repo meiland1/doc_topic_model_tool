@@ -165,7 +165,8 @@ class BackendWiringTests(unittest.TestCase):
         passages=[SimpleNamespace(id=str(i),text=text) for i,text in enumerate(['clinic care','clinic medicine','unrelated orbit'])]
         def represent(passages, assignments,*args):
             return TopicOutput(assignments, {t:[('evidence',.2)] for t in set(assignments)})
-        with TemporaryDirectory() as temporary, replace_imports(modules), patch.object(engine,'version',return_value='test'), patch.object(refinement,'fixed_partition_backend',side_effect=represent):
+        from conftest import fake_model_resources
+        with TemporaryDirectory() as temporary, fake_model_resources(), replace_imports(modules), patch.object(engine,'version',return_value='test'), patch.object(refinement,'fixed_partition_backend',side_effect=represent):
             directory=Path(temporary)
             guided=AnalysisSettings(analysis_method='guided',min_topic_size=2,topic_definitions=(('Care','clinic, health insurance'),))
             result=engine.fit_bertopic(passages,guided,directory,lambda *args:None,None)
@@ -180,7 +181,7 @@ class BackendWiringTests(unittest.TestCase):
                 self.assertLessEqual(np.abs(np.load(path)).max(),1)
             import numpy.fft as fft_inside
         # A later model/visualization test must reuse native modules, not reload them.
-        import numpy.fft
+        import numpy.fft  # noqa: F401 (the import itself is what's being checked)
         from sklearn.decomposition import PCA
         self.assertIs(sys.modules["numpy.fft"], fft_inside)
         self.assertEqual(np.fft.fft([1., 0.]).shape, (2,))

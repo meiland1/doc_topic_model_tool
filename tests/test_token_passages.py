@@ -80,13 +80,13 @@ def test_preview_pipeline_matches_saved_analysis_and_keeps_coding(corpus, budget
         assert conn.execute('SELECT start_char,end_char FROM codings WHERE theme_id=?', (theme,)).fetchall() == [(0, 10)]
 
 
-def test_legacy_offsets_unchanged_and_oversize_reported(corpus, budget):
+def test_whole_document_offsets_unchanged_and_oversize_reported(corpus, budget):
     directory, doc = corpus
     old = prepare_passages(directory, 'Whole document', [doc])
     info = {}
     measured = prepare_passages(directory, 'Whole document', [doc], diagnostics=info)
     assert [(p.start, p.end) for p in old] == [(p.start, p.end) for p in measured]
-    assert info['oversized'] == 1 and info['method'] == 'legacy-word-v1'
+    assert info['oversized'] == 1 and info['method'] == 'whole-document-v1'
 
 
 def test_automatic_cancellation_leaves_no_partial_run(corpus, budget):
@@ -110,7 +110,7 @@ def test_local_tokenizer_and_limit_without_loading_encoder():
     assert all(actual.count(model_text(text, span)) <= actual.maximum for span in spans)
 
 
-def test_setup_requires_consent_for_legacy_oversize(corpus, budget, qt_test_application):
+def test_setup_requires_consent_for_oversized_passages(corpus, budget, qt_test_application):
     from PySide6.QtCore import QEventLoop, QTimer
     from PySide6.QtWidgets import QDialogButtonBox
     from qualitative_themes.gui.analysis_setup import AnalysisSetupDialog

@@ -1,6 +1,6 @@
 """Paged audit inspection and cancellable research export workers."""
 import json
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QSplitter,
     QTabWidget, QVBoxLayout, QWidget)

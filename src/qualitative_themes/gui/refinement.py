@@ -1,7 +1,7 @@
 """Refinement choices and explicit identity review in the research workspace."""
 from dataclasses import replace
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFormLayout, QLabel, QMessageBox, QPlainTextEdit, QScrollArea, QSpinBox,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
@@ -9,11 +9,11 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
 from qualitative_themes.analysis.refinement import (
     OPERATIONS, apply_proposal, cancel_proposal, propose_refinement, review_proposal, proposal_evidence,
 )
-from qualitative_themes.analysis.settings import parse_ignored_words
 from qualitative_themes.analysis.topics import AnalysisCancelled
 
 
 from qualitative_themes.gui.worker import WorkerThread
+from qualitative_themes.gui.settings_form import KeywordOptions, naming_model_choice
 
 
 class RefinementWorker(WorkerThread):
@@ -70,22 +70,9 @@ class RefinementSetupDialog(QDialog):
         self.target.setRange(1, max(1, self.theme_count - 1))
         self.target.setValue(max(1, self.theme_count - 1))
         form.addRow("Fewer themes (excluding Uncategorized)", self.target)
-        self.ignored = QPlainTextEdit()
-        self.ignored.setMaximumHeight(70)
-        self.ignored.setPlainText(", ".join(source["settings"].ignored_words))
-        form.addRow("Words to ignore", self.ignored)
-        self.phrases = QComboBox()
-        self.phrases.addItems(["Words and two-word phrases", "Words only"])
-        self.phrases.setCurrentIndex(int(source["settings"].ngram_range == (1, 1)))
-        form.addRow("Keyword phrases", self.phrases)
-        self.model = QComboBox()
-        self.model.addItem("Keyword fallback", None)
-        for name in dict.fromkeys(name for name in models if name):
-            self.model.addItem(name, name)
-        initial = source["settings"].ollama_model
-        if initial and self.model.findData(initial) < 0:
-            self.model.addItem(initial, initial)
-        self.model.setCurrentIndex(max(0, self.model.findData(initial)))
+        self.keywords = KeywordOptions(form, source["settings"], tooltips=False)
+        self.ignored, self.phrases = self.keywords.ignored, self.keywords.phrases
+        self.model = naming_model_choice(models, source["settings"].ollama_model, fallback_label="Keyword fallback")
         form.addRow("Installed local Ollama model", self.model)
         self.auto_names = QCheckBox("Name proposed themes with local Ollama")
         form.addRow(self.auto_names)
@@ -111,8 +98,7 @@ class RefinementSetupDialog(QDialog):
         if blocked:
             self.consequences.setText("Automatic reduction is disabled to protect predefined categories. Use an explicit theme merge in Research Workspace instead.")
         self.target.setEnabled(operation == "reduce" and not blocked)
-        self.ignored.setEnabled(operation in {"words", "reduce"})
-        self.phrases.setEnabled(operation in {"words", "reduce"})
+        self.keywords.set_enabled(operation in {"words", "reduce"})
         self.auto_names.setEnabled(operation in {"words", "reduce"})
         self.model.setEnabled(operation == "names" or
                               (operation in {"words", "reduce"} and self.auto_names.isChecked()))
@@ -123,8 +109,7 @@ class RefinementSetupDialog(QDialog):
         changes = {"name_themes": operation == "names" or self.auto_names.isChecked(),
                    "ollama_model": self.model.currentData()}
         if operation in {"words", "reduce"}:
-            changes.update(ignored_words=parse_ignored_words(self.ignored.toPlainText()),
-                           ngram_range=(1, 1) if self.phrases.currentIndex() else (1, 2))
+            changes.update(self.keywords.values())
         if operation == "reduce":
             changes["requested_theme_count"] = self.target.value()
         return replace(self.source["settings"], **changes)

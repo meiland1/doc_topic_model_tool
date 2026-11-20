@@ -28,7 +28,7 @@ class TokenBudget:
 
 
 def load_token_budget(settings=None, directory=None):
-    """Pre: the embedding model is bundled (or in the legacy project cache).
+    """Pre: the embedding model is in the resources folder (see analysis.encoder).
     Post: a cached TokenBudget. Only reads the tokenizer, not model weights,
     so it's fast enough for previews.
     """
@@ -44,14 +44,8 @@ def load_token_budget(settings=None, directory=None):
 def _load(kind, path, model, revision):
     try:
         from transformers import AutoTokenizer
-        if kind == 'bundled':
-            config = Path(path) / 'sentence_bert_config.json'
-            tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True)
-        else:
-            from transformers.utils.hub import cached_file
-            config = Path(cached_file(model, 'sentence_bert_config.json', revision=revision,
-                                      cache_dir=path, local_files_only=True))
-            tokenizer = AutoTokenizer.from_pretrained(model, revision=revision, cache_dir=path, local_files_only=True)
+        config = Path(path) / 'sentence_bert_config.json'
+        tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True)
         content = config.read_bytes()
         maximum = json.loads(content)['max_seq_length']
         if type(maximum) is not int or maximum <= tokenizer.num_special_tokens_to_add():

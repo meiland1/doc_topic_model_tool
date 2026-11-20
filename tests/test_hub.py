@@ -1,5 +1,4 @@
 """Start screen: recent projects, setup panel, opening projects from the hub."""
-from pathlib import Path
 
 from qualitative_themes.runtime import app_settings, health
 from qualitative_themes.storage.database import create_project

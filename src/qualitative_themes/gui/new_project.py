@@ -10,7 +10,7 @@ import re
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget,
                                QTableWidgetItem, QVBoxLayout)

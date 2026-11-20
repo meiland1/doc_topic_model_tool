@@ -3,7 +3,6 @@ import json
 import sys
 import types
 import zipfile
-from pathlib import Path
 
 import pytest
 

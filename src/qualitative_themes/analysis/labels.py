@@ -12,7 +12,7 @@ from uuid import uuid4
 from qualitative_themes.analysis.topics import check_cancel, AnalysisCancelled
 from qualitative_themes.storage.database import connect
 
-from qualitative_themes.runtime.engine import SYSTEM_URL as BASE_URL, current_base_url
+from qualitative_themes.runtime.engine import current_base_url
 TEMPLATE_VERSION = "qualitative-theme-label-v1"
 AUTO_NAMING_LIMIT = 100
 SCHEMA = {"type": "object", "properties": {
@@ -171,6 +171,7 @@ def label_run(directory, run_id, model_name, progress=None, should_cancel=None, 
                     raise ValueError("Choose an installed theme-naming model in Settings, then retry.")
             except Exception as exc:
                 service_error = "Local Ollama unavailable: " + str(exc)[:250]
+        model_loading_shown = False
         for index, job in enumerate(jobs):
             check_cancel(should_cancel)
             progress(f"Naming theme {index+1}/{len(jobs)}…")
@@ -184,6 +185,14 @@ def label_run(directory, run_id, model_name, progress=None, should_cancel=None, 
                 try:
                     if service_error:
                         raise ValueError(service_error)
+                    if not model_loading_shown:
+                        # Ollama loads the whole model into memory on the first request
+                        # (~5 GB for llama3.1:8b), which can take a minute or two with no
+                        # other sign of progress. Keep the "Naming theme N/M" prefix: the
+                        # progress strip parses it.
+                        progress(f"Naming theme {index+1}/{len(jobs)}… loading {model_name} "
+                                 "into memory first (can take a minute or two)")
+                        model_loading_shown = True
                     response = client.post("/api/generate", json={"model": model_name, "stream": False,
                         "format": SCHEMA, "prompt": build_prompt(job["keywords"], job["excerpts"]),
                         "options": {"temperature": 0.1, "seed": 42, "num_predict": 160, "num_ctx": 4096}})

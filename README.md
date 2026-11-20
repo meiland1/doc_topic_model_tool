@@ -52,7 +52,7 @@ model limit, oversized passage count, and extra splits within sentences. The sam
 routine is used for preview and analysis. Auto is also selected by Restore Recommended Defaults;
 existing saved passage choices are retained.
 
-Short, Standard, Long, Paragraphs, and Whole document retain their existing boundaries.
+Paragraphs and Whole document keep the boundaries of the source text.
 If their model inputs exceed the limit, choose Auto or explicitly check **Allow only the start
 of oversized passages**. With that permission, text beyond the limit does not contribute to
 the embedding even though the full passage remains visible. Auto never allows truncation.
@@ -109,24 +109,6 @@ Embedding respects the configured batch size and automatically retries recognize
 failures using smaller batches. If even one passage cannot fit, the task reports a memory
 error. Completed cached work remains available for a later run. Progress counts cover the
 current stage; cancellation waits for the current model call or clustering operation.
-
-Choose **Semantic*** to try experimental boundaries based on changes between adjacent
-sentences. A **Minimum passage target** of 128 tokens prevents similarity changes from
-splitting every short sentence into a separate passage. Increase the target or lower
-sensitivity for fewer boundaries; the target cannot override the model's maximum token
-limit. Short final passages and forced size splits remain possible. A value of zero
-restores unrestricted similarity splitting. Existing saved analyses retain their ranges;
-new analyses record the revised method and minimum target. The preview warns above 5,000
-passages; this is guidance, not a corpus-size limit, and no source text is dropped.
-
-Semantic splitting uses the local embedding model and preserves source coordinates and token
-limits. The first preview loads model weights and can be slower than Auto; subsequent
-previews reuse cached sentence vectors in the project. Higher boundary sensitivity splits
-more often; it is not a confidence score. Compare the preview with Auto and review passages
-in context. Similarity boundaries can cross paragraphs and speakers: choose Interview when
-speaker boundaries matter. Final passages are embedded normally for topic analysis, rather
-than replacing their embeddings with averages of sentence vectors. This option is not the
-default and has not been validated as improving qualitative research results.
 
 Choose **Interview** for transcripts with recurring speaker labels. Different speakers stay
 in separate passages; consecutive turns from the same speaker can be combined, and long

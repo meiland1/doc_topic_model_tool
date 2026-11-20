@@ -1,8 +1,8 @@
 """Load the sentence-embedding model once per session, offline only.
 
-Source order:
-1. The model bundled with the installed app (``resources/models/embedding``).
-2. A legacy per-project cache (``<project>/models/weights``) from older versions.
+The model always comes from the app's resources folder
+(``resources/models/embedding``). A source checkout gets it from
+``scripts/fetch_resources.py``; tests point DOC_TOPIC_MODEL_RESOURCES elsewhere.
 
 Nothing here downloads: ``local_files_only=True`` is always passed, and the
 offline guard in ``runtime.offline`` blocks Hugging Face network access.
@@ -10,7 +10,6 @@ offline guard in ``runtime.offline`` blocks Hugging Face network access.
 from __future__ import annotations
 
 import threading
-from pathlib import Path
 
 from qualitative_themes.runtime.paths import bundled_embedding_model
 
@@ -30,15 +29,12 @@ def _sentence_transformer():
 
 
 def embedding_source(settings, directory=None):
-    """Describe where the encoder will load from, or None when nothing is available."""
+    """Where the encoder loads from ({'kind', 'path'}), or None when the model is missing.
+
+    `settings` and `directory` are accepted so callers don't care where the model lives.
+    """
     bundled = bundled_embedding_model()
-    if bundled is not None:
-        return {"kind": "bundled", "path": str(bundled)}
-    if directory is not None:
-        legacy = Path(directory) / "models" / "weights"
-        if legacy.is_dir() and any(legacy.iterdir()):
-            return {"kind": "project_cache", "path": str(legacy)}
-    return None
+    return {"kind": "bundled", "path": str(bundled)} if bundled is not None else None
 
 
 def load_encoder(settings, directory=None):
@@ -49,21 +45,15 @@ def load_encoder(settings, directory=None):
     """
     factory = _sentence_transformer()
     source = embedding_source(settings, directory)
-    # Fall back to the legacy cache lookup even when the folder looks empty, so an
-    # injected test double (or an older layout) still gets a chance to load.
     if source is None:
-        source = {"kind": "project_cache", "path": str(Path(directory) / "models" / "weights") if directory else ""}
-    key = (id(factory), source["kind"], source["path"], settings.embedding_model, settings.embedding_revision)
+        raise ValueError(MISSING_MESSAGE)
+    key = (id(factory), source["path"], settings.embedding_model, settings.embedding_revision)
     with _lock:
         if key in _cache:
             return _cache[key]
         try:
             device = preferred_device()
-            if source["kind"] == "bundled":
-                encoder = factory(source["path"], device=device, local_files_only=True)
-            else:
-                encoder = factory(settings.embedding_model, revision=settings.embedding_revision,
-                                  cache_folder=source["path"] or None, local_files_only=True, device=device)
+            encoder = factory(source["path"], device=device, local_files_only=True)
         except Exception as exc:
             raise ValueError(MISSING_MESSAGE) from exc
         _cache[key] = encoder

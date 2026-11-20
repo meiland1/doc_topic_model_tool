@@ -37,20 +37,15 @@ def create_theme(directory: Path, label: str) -> str:
 
 
 def analysis_document_ids(directory: Path, run_id: str) -> set[str]:
-    """Selected corpus for a saved run; support older records without metadata."""
+    """Ids of the documents a saved run analyzed."""
     with connect(directory) as conn:
         return analysis_document_ids_from_connection(conn, run_id)
 
 
 def analysis_document_ids_from_connection(conn, run_id):
-    """Selected corpus for a run (falls back to the run's segments for old runs)."""
+    """Same as analysis_document_ids(), on an open connection."""
     row = conn.execute("SELECT settings_json FROM analysis_runs WHERE id=?", (run_id,)).fetchone()
-    if row is None:
-        return set()
-    settings = json.loads(row[0])
-    if "document_ids" in settings:
-        return set(settings["document_ids"])
-    return {r[0] for r in conn.execute("SELECT DISTINCT document_id FROM segments WHERE run_id=?", (run_id,))}
+    return set(json.loads(row[0]).get("document_ids", [])) if row else set()
 
 
 def list_themes(directory: Path, run_id: str | None = None) -> list[tuple[str, str, int]]:

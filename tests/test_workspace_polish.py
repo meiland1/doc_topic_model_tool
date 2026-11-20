@@ -1,8 +1,5 @@
 """Shared stylesheet resources and compact workspace interactions."""
-from pathlib import Path
-from tempfile import TemporaryDirectory
-from PySide6.QtCore import Qt
-from qualitative_themes.gui.coding_workspace import CodingWorkspace
+from qualitative_themes.gui.read_code import CodingWorkspace
 from qualitative_themes.gui.styling import apply_application_style
 from qualitative_themes.storage.database import create_project
 from qualitative_themes.storage.documents import import_document

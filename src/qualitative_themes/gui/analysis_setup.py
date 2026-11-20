@@ -1,37 +1,35 @@
 """Beginner setup with asynchronous corpus inspection and local model discovery."""
 from dataclasses import replace
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea,
-    QSpinBox, QTextEdit, QVBoxLayout, QWidget)
+    QSpinBox, QVBoxLayout, QWidget)
 
 from qualitative_themes.analysis.labels import list_local_models
-from qualitative_themes.analysis.segment import TOKEN_SAFE_UNITS, UNITS
+from qualitative_themes.analysis.segment import DEFAULT_UNIT, TOKEN_SAFE_UNITS, UNITS
 from qualitative_themes.analysis.settings import (PRESETS, STYLE_HELP, AnalysisSettings,
-    ANALYSIS_METHODS, parse_topic_definitions, parse_ignored_words, preset_settings, validate_settings, small_corpus_warning)
-from qualitative_themes.analysis.speakers import count_interviewer_turns, detect_speakers, interviewer_ranges
+    ANALYSIS_METHODS, parse_topic_definitions, preset_settings, validate_settings, small_corpus_warning)
+from qualitative_themes.analysis.speakers import count_interviewer_turns, detect_speakers
 from qualitative_themes.analysis.topics import prepare_passages
-from qualitative_themes.domain.text_coordinates import TextCoordinates
 from qualitative_themes.storage.documents import get_document
 
-UNIT_BUTTONS = {"Automatic passages": "Auto", "Interview passages": "Interview", "Semantic passages": "Semantic*", "Short passages": "Short", "Standard passages": "Standard", "Long passages": "Long",
+UNIT_BUTTONS = {"Automatic passages": "Auto", "Interview passages": "Interview",
                 "Paragraphs": "Paragraph", "Whole document": "Whole doc"}
 
 
 UNIT_HELP = {
     "Automatic passages": "Keep sentences and paragraphs together where possible; fit every passage within the local model's token limit.",
     "Interview passages": "Keep different speakers separate and split long answers within the model limit. Uncertain speaker layouts use Auto and keep all text; review the preview.",
-    "Semantic passages": "Experimental: use the local model to find changes between sentences. Slower first preview; not guaranteed to improve topics. Token limits still apply. Use Interview to enforce speaker boundaries.",
-    "Short passages": "Specific ideas with less context; usually more passages to analyze.",
-    "Standard passages": "A starting point that balances context and passage count.",
-    "Long passages": "More context per passage; embedding models may truncate long text.",
     "Paragraphs": "Use each extracted paragraph as a passage; length varies with the source.",
     "Whole document": "One passage per document; may hide smaller ideas and truncate long text.",
 }
 
 
 from qualitative_themes.gui.worker import WorkerThread
+from qualitative_themes.gui.passage_preview import PassagePreviewMixin
+from qualitative_themes.gui.settings_form import KeywordOptions, naming_model_choice, refill_naming_models
+
+NO_MODEL_LABEL = "Keyword fallback (no model selected)"
 
 
 class InspectionWorker(WorkerThread):
@@ -80,7 +78,7 @@ class ModelListWorker(WorkerThread):
             self.failed.emit(str(exc))
 
 
-class AnalysisSetupDialog(QDialog):
+class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
     """Choose method, passage size, style and naming before an analysis.
 
     Usage: exec() it, then read settings() and unit.currentText() if accepted.
@@ -88,7 +86,7 @@ class AnalysisSetupDialog(QDialog):
     Closing/rejecting waits for any running worker first, so the caller can
     deleteLater() the dialog straight away.
     """
-    def __init__(self, directory, documents, settings=None, unit="Standard passages", models=(), parent=None):
+    def __init__(self, directory, documents, settings=None, unit=DEFAULT_UNIT, models=(), parent=None):
         super().__init__(parent)
         self.directory, self.documents = directory, documents
         self.initial = settings or AnalysisSettings()
@@ -173,26 +171,6 @@ class AnalysisSetupDialog(QDialog):
         self.allow_truncation.setChecked(self.initial.allow_truncation)
         self.allow_truncation.setToolTip('Keeps the selected passage boundaries, but text beyond the model limit does not contribute to its embedding. This choice is saved with the analysis.')
         form.addRow(self.allow_truncation)
-        self.semantic_options = QWidget()
-        semantic_row = QFormLayout(self.semantic_options)
-        semantic_row.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        semantic_row.setContentsMargins(0, 0, 0, 0)
-        self.semantic_threshold = QDoubleSpinBox()
-        self.semantic_threshold.setRange(0, 1)
-        self.semantic_threshold.setDecimals(2)
-        self.semantic_threshold.setSingleStep(0.05)
-        self.semantic_threshold.setValue(self.initial.semantic_threshold)
-        self.semantic_threshold.setToolTip('Higher values split more often. This is a similarity threshold, not confidence. Compare the preview with Auto.')
-        semantic_row.addRow('Boundary sensitivity (experimental)', self.semantic_threshold)
-        self.semantic_min_tokens = QSpinBox()
-        self.semantic_min_tokens.setRange(0, 4096)
-        self.semantic_min_tokens.setSingleStep(32)
-        self.semantic_min_tokens.setValue(self.initial.semantic_min_tokens)
-        self.semantic_min_tokens.setToolTip('Wait for this many tokens before splitting for a topic change. Recommended: 128. '
-                                           'Token limits and short final passages can still produce smaller passages. '
-                                           'The target is capped at the model limit. Zero restores unrestricted splitting.')
-        semantic_row.addRow('Minimum passage target (tokens)', self.semantic_min_tokens)
-        form.addRow(self.semantic_options)
         self._texts = {doc: get_document(self.directory, doc)[1] for doc, _ in documents}
         self.speakers = detect_speakers(self._texts.values())
         self.exclude_interviewer = QCheckBox("Leave out interviewer turns")
@@ -262,25 +240,10 @@ class AnalysisSetupDialog(QDialog):
         self.minimum.setValue(self.initial.min_topic_size)
         self.minimum.setToolTip("Minimum passages supporting a discovered group; changing this overrides the style default.")
         advanced.addRow("Minimum evidence (passages)", self.minimum)
-        self.ignored = QPlainTextEdit()
-        self.ignored.setTabChangesFocus(True)
-        self.ignored.setAccessibleName('Words to ignore')
-        self.ignored.setMaximumHeight(65)
-        self.ignored.setPlainText(", ".join(self.initial.ignored_words))
-        self.ignored.setPlaceholderText("Words separated by commas, spaces, or newlines; added to English stop words")
-        self.ignored.setToolTip("Ignored words affect extracted keywords; passage embeddings still use the complete text.")
-        advanced.addRow("Words to ignore", self.ignored)
-        self.phrases = QComboBox()
-        self.phrases.addItems(["Words and two-word phrases", "Words only"])
-        self.phrases.setCurrentIndex(int(self.initial.ngram_range == (1, 1)))
-        advanced.addRow("Keyword phrases", self.phrases)
-        self.model = QComboBox()
-        self.model.addItem("Keyword fallback (no model selected)", None)
-        for name in models:
-            self.model.addItem(name, name)
-        if self.initial.ollama_model and self.model.findData(self.initial.ollama_model) < 0:
-            self.model.addItem(self.initial.ollama_model + " (refresh to verify)", self.initial.ollama_model)
-        self.model.setCurrentIndex(max(0, self.model.findData(self.initial.ollama_model)))
+        self.keywords = KeywordOptions(advanced, self.initial)
+        self.ignored, self.phrases = self.keywords.ignored, self.keywords.phrases
+        self.model = naming_model_choice(models, self.initial.ollama_model, fallback_label=NO_MODEL_LABEL,
+                                         unverified_suffix=" (refresh to verify)")
         advanced.addRow("Optional naming model", self.model)
         self.refresh_models = QPushButton("Refresh installed models")
         self.refresh_models.clicked.connect(self.fetch_models)
@@ -311,14 +274,12 @@ class AnalysisSetupDialog(QDialog):
         self.style.currentTextChanged.connect(self.style_changed)
         self.unit.currentTextChanged.connect(self.inspect)
         for signal in [self.number_mode.currentIndexChanged, self.number.valueChanged,
-                       self.minimum.valueChanged, self.ignored.textChanged, self.phrases.currentIndexChanged,
+                       self.minimum.valueChanged, *self.keywords.changed_signals(),
                        self.auto_names.toggled, self.model.currentIndexChanged]:
             signal.connect(self.update_validation)
         self.update_validation()
         self.inspect()
         self.allow_truncation.toggled.connect(self.update_validation)
-        self.semantic_threshold.valueChanged.connect(self.inspect)
-        self.semantic_min_tokens.valueChanged.connect(self.inspect)
 
     def settings(self):
         # Preserve the configured internal embedding identity and execution seed.
@@ -330,10 +291,7 @@ class AnalysisSetupDialog(QDialog):
             embedding_revision=self.initial.embedding_revision, seed=self.initial.seed,
             batch_size=self.initial.batch_size, min_topic_size=self.minimum.value(),
             allow_truncation=self.allow_truncation.isChecked() and self.unit.currentText() not in TOKEN_SAFE_UNITS,
-            semantic_threshold=self.semantic_threshold.value(),
-            semantic_min_tokens=self.semantic_min_tokens.value(),
-            ignored_words=parse_ignored_words(self.ignored.toPlainText()),
-            ngram_range=(1, 1) if self.phrases.currentIndex() else (1, 2),
+            **self.keywords.values(),
             requested_theme_count=self.number.value() if self.number_mode.currentIndex() else None,
             name_themes=self.auto_names.isChecked(), ollama_model=self.model.currentData(),
             exclude_interviewer=self.exclude_interviewer.isChecked() and bool(self.chosen_labels()),
@@ -352,8 +310,6 @@ class AnalysisSetupDialog(QDialog):
         self.minimum.setValue(5)
         self.unit.setCurrentText("Automatic passages")
         self.allow_truncation.setChecked(False)
-        self.semantic_threshold.setValue(0.65)
-        self.semantic_min_tokens.setValue(128)
         for index in range(self.speaker_list.count()):
             item = self.speaker_list.item(index)
             suggested = self.speakers[index]["suggested"]
@@ -361,8 +317,7 @@ class AnalysisSetupDialog(QDialog):
         self.exclude_interviewer.setChecked(any(row["suggested"] for row in self.speakers))
         self.number_mode.setCurrentIndex(0)
         self.number.setValue(5)
-        self.ignored.clear()
-        self.phrases.setCurrentIndex(0)
+        self.keywords.reset()
         self.auto_names.setChecked(False)
         self.model.setCurrentIndex(0)
         self.update_validation()
@@ -371,8 +326,7 @@ class AnalysisSetupDialog(QDialog):
         if self._reject_requested:
             return
         self.summary = None
-        self.work.setText('Finding experimental semantic boundaries with the local model…' if self.unit.currentText() == 'Semantic passages'
-                          else 'Counting selected passages…')
+        self.work.setText('Counting selected passages…')
         if self._inspection:
             self._inspection_restart = True
             self._inspection.requestInterruption()
@@ -380,8 +334,7 @@ class AnalysisSetupDialog(QDialog):
             return
         self._inspection = InspectionWorker(self.directory, [doc for doc, _ in self.documents], self.unit.currentText(), self,
                                             exclude_interviewer=self.excluding(), labels=self.chosen_labels(),
-                                            settings=replace(self.initial, semantic_threshold=self.semantic_threshold.value(),
-                                                             semantic_min_tokens=self.semantic_min_tokens.value()))
+                                            settings=self.initial)
         self._inspection.result.connect(self.inspected)
         self._inspection.failed.connect(lambda message: self.validation.setText(message))
         self._inspection.finished.connect(self.inspection_finished)
@@ -390,10 +343,7 @@ class AnalysisSetupDialog(QDialog):
 
     def inspected(self, unit, summary):
         if (unit == self.unit.currentText() and summary["exclude_interviewer"] == self.excluding()
-                and summary["labels"] == tuple(self.chosen_labels())
-                and (unit != 'Semantic passages' or (
-                    summary.get('segmentation', {}).get('semantic_threshold') == self.semantic_threshold.value()
-                    and summary.get('segmentation', {}).get('semantic_min_tokens') == self.semantic_min_tokens.value()))):
+                and summary["labels"] == tuple(self.chosen_labels())):
             self.summary = summary
             self.passages = summary["passages"]
             self.work.setText(f"{summary['count']:,} passages · {summary['average']} words on average · "
@@ -417,57 +367,7 @@ class AnalysisSetupDialog(QDialog):
                 self.work.setToolTip('\n'.join(fallback_names))
             else:
                 self.work.setToolTip('')
-            if detail.get('experimental'):
-                self.work.setText(self.work.text() + f"\nMinimum target: {detail.get('effective_semantic_min_tokens', detail.get('semantic_min_tokens'))} tokens; "
-                                  f"avoided {detail.get('suppressed_semantic_breaks', 0)} short-passage splits.")
-                self.work.setText(self.work.text() + f"\nExperimental: {detail.get('semantic_breaks', 0)} similarity boundaries; "
-                                  f"{detail.get('token_limit_breaks', 0)} size boundaries. "
-                                  f"Reused {detail.get('sentence_vectors_reused', 0)} sentence vectors; "
-                                  f"computed {detail.get('sentence_vectors_computed', 0)}. Compare with Auto before choosing.")
             self.render_preview()
-
-    # Passage preview ----------------------------------------------------------
-    def build_preview_pane(self):
-        pane = QWidget()
-        layout = QVBoxLayout(pane)
-        layout.setContentsMargins(8, 0, 0, 0)
-        header = QGridLayout()
-        title = QLabel("Passage preview")
-        title.setObjectName("setupName")
-        title.setWordWrap(True)
-        header.addWidget(title, 0, 0)
-        self.preview_doc = QComboBox()
-        self.preview_doc.setAccessibleName("Document to preview")
-        for doc, name in self.documents:
-            self.preview_doc.addItem(name, doc)
-        self.preview_doc.currentIndexChanged.connect(lambda _i: self.render_preview())
-        header.addWidget(self.preview_doc, 0, 1, 1, 2)
-        self.preview_position = QLabel("")
-        self.preview_position.setObjectName("quiet")
-        self.preview_position.setWordWrap(True)
-        header.addWidget(self.preview_position, 1, 0)
-        header.setColumnStretch(0, 1)
-        previous = QPushButton("‹")
-        previous.setAccessibleName("Previous passage")
-        previous.setMinimumWidth(36)
-        previous.clicked.connect(lambda: self.step_preview(-1))
-        following = QPushButton("›")
-        following.setAccessibleName("Next passage")
-        following.setMinimumWidth(36)
-        following.clicked.connect(lambda: self.step_preview(1))
-        header.addWidget(previous, 1, 1)
-        header.addWidget(following, 1, 2)
-        layout.addLayout(header)
-        self.preview = QTextEdit()
-        self.preview.setReadOnly(True)
-        self.preview.setObjectName("passagePreview")
-        layout.addWidget(self.preview, 1)
-        note = QLabel("Shaded bands are passages. Grey text is left out of theme finding. "
-                      "The same split is used when you click Analyze.")
-        note.setObjectName("quiet")
-        note.setWordWrap(True)
-        layout.addWidget(note)
-        return pane
 
     def chosen_labels(self):
         return [self.speaker_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.speaker_list.count())
@@ -491,70 +391,6 @@ class AnalysisSetupDialog(QDialog):
         for button in self.unit_group.buttons():
             button.setChecked(button.toolTip() == UNIT_HELP.get(unit))
 
-    def preview_spans(self):
-        doc = self.preview_doc.currentData()
-        return [p for p in self.passages if p.document_id == doc]
-
-    def render_preview(self):
-        doc = self.preview_doc.currentData()
-        if not doc or not hasattr(self, "speaker_list"):
-            return
-        _name, text, _spans = get_document(self.directory, doc)
-        self._preview_coords = TextCoordinates.build(text)
-        self._preview_text = text
-        self.preview.setPlainText(self._preview_coords.display_text)
-        spans = self.preview_spans()
-        self.preview_index = 0 if spans else -1
-        self.paint_preview()
-
-    def paint_preview(self):
-        spans = self.preview_spans()
-        coords = getattr(self, "_preview_coords", None)
-        if coords is None:
-            return
-        selections = []
-
-        def band(start, end, colour=None, foreground=None, italic=False):
-            q_start, q_end = coords.qt_range(start, end)
-            cursor = self.preview.textCursor()
-            cursor.setPosition(q_start)
-            cursor.setPosition(q_end, QTextCursor.MoveMode.KeepAnchor)
-            selection = QTextEdit.ExtraSelection()
-            selection.cursor = cursor
-            fmt = QTextCharFormat()
-            if colour:
-                fmt.setBackground(QColor(colour))
-            if foreground:
-                fmt.setForeground(QColor(foreground))
-            fmt.setFontItalic(italic)
-            selection.format = fmt
-            selections.append(selection)
-
-        for index, passage in enumerate(spans):
-            band(passage.start, passage.end, "#c9e7e3" if index == self.preview_index else
-                 ("#eef3f6" if index % 2 else "#f7f9fa"))
-        fallback_ids = (self.summary or {}).get('segmentation', {}).get('fallback_document_ids', [])
-        if self.excluding() and self.preview_doc.currentData() not in fallback_ids:
-            for start, end in interviewer_ranges(self._preview_text, self.chosen_labels()):
-                band(start, end, foreground="#8a97a6", italic=True)
-        self.preview.setExtraSelections(selections)
-        if 0 <= self.preview_index < len(spans):
-            q_start, _ = coords.qt_range(spans[self.preview_index].start, spans[self.preview_index].end)
-            cursor = self.preview.textCursor()
-            cursor.setPosition(q_start)
-            self.preview.setTextCursor(cursor)
-            self.preview.ensureCursorVisible()
-            words = len(spans[self.preview_index].text.split())
-            self.preview_position.setText(f"Passage {self.preview_index + 1} of {len(spans)} · {words} words")
-        else:
-            self.preview_position.setText("No passages in this document")
-
-    def step_preview(self, direction):
-        spans = self.preview_spans()
-        if spans:
-            self.preview_index = (self.preview_index + direction) % len(spans)
-            self.paint_preview()
-
     def inspection_finished(self):
         worker = self._inspection
         if worker is None:
@@ -576,7 +412,6 @@ class AnalysisSetupDialog(QDialog):
             'Topic finding uses the bundled model. Optional theme naming is off.' if not self.auto_names.isChecked() else
             ('Optional naming model: ' + str(self.model.currentData()) + '. Change it in Advanced setup.'
              if self.model.currentData() else 'No optional naming model selected. Themes will use keywords; choose a model in Advanced setup if desired.'))
-        self.semantic_options.setVisible(self.unit.currentText() == 'Semantic passages')
         self.allow_truncation.setVisible(self.unit.currentText() not in TOKEN_SAFE_UNITS)
         method = self.method.currentData()
         self.topic_editor.setEnabled(method != "general")
@@ -606,7 +441,7 @@ class AnalysisSetupDialog(QDialog):
                 warning = small_corpus_warning(settings, self.summary["count"])
                 if self.summary['count'] > 5000:
                     warning = (warning + '\n' if warning else '') + 'Large analysis: more than 5,000 passages can be slow. '
-                    warning += 'For Semantic, increase the minimum passage target or lower sensitivity; compare Auto, or select fewer documents.'
+                    warning += 'Select fewer documents, or choose Paragraphs.'
                 if settings.name_themes:
                     warning = (warning + '\n' if warning else '') + 'Automatic naming is skipped above 50 topics. Saved keyword names remain available.'
                 self.validation.setText(ready + ("\n" + warning if warning else ""))
@@ -628,16 +463,7 @@ class AnalysisSetupDialog(QDialog):
         self._models_worker.start()
 
     def models_ready(self, models):
-        old = self.model.currentData()
-        self.model.clear()
-        self.model.addItem("Keyword fallback (no model selected)", None)
-        for row in models:
-            self.model.addItem(row["name"], row["name"])
-        index = self.model.findData(old)
-        if index < 0:
-            from qualitative_themes.analysis.settings import DEFAULT_NAMING_MODEL
-            index = self.model.findData(DEFAULT_NAMING_MODEL)
-        self.model.setCurrentIndex(index if index >= 0 else (1 if models else 0))
+        refill_naming_models(self.model, [row["name"] for row in models], fallback_label=NO_MODEL_LABEL)
         self.model_status.setText(f"{len(models)} local model(s) found.")
 
     def models_finished(self):

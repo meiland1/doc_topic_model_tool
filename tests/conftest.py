@@ -9,6 +9,26 @@ import tempfile
 os.environ.setdefault('DOC_TOPIC_MODEL_APP_DATA', tempfile.mkdtemp(prefix='tmt-test-appdata-'))
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def fake_model_resources():
+    """Point the app at a resources folder holding a stand-in embedding model.
+
+    For tests that patch in a fake SentenceTransformer: the encoder only loads
+    from the resources folder, so it needs a folder to point at.
+    """
+    from unittest.mock import patch
+    root = tempfile.mkdtemp(prefix='tmt-test-resources-')
+    model = os.path.join(root, 'models', 'embedding')
+    os.makedirs(model)
+    with open(os.path.join(model, 'config.json'), 'w') as handle:
+        handle.write('{}')
+    with patch.dict(os.environ, {'DOC_TOPIC_MODEL_RESOURCES': root}):
+        yield root
+
+
 def _dispose_test_windows(app):
     from PySide6.QtCore import QCoreApplication, QEvent
     # close() hides a widget; it does not necessarily destroy its native object.

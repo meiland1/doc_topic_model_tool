@@ -45,6 +45,12 @@ def rename_analysis(directory, run_id, name):
                       json.dumps({"run_id": run_id, "old": old, "new": name or None})))
 
 
+def segment_count(directory, run_id):
+    """Number of passages saved for a run (0 for an unknown run)."""
+    with connect(directory) as conn:
+        return conn.execute("SELECT count(*) FROM segments WHERE run_id=?", (run_id,)).fetchone()[0]
+
+
 def history_runs(directory, offset=0, limit=50):
     """One page of runs, newest first. Returns (rows, total_count) for paging."""
     with connect(directory) as conn:
@@ -58,8 +64,7 @@ def history_runs(directory, offset=0, limit=50):
 def analysis_details(directory, run_id):
     """Plain-text audit summary of one run, plus its raw settings/model_info.
 
-    Only reads what was recorded at run time, so older runs show
-    'Not recorded' for fields added later.
+    Only reads what was recorded at run time.
     """
     with connect(directory) as conn:
         row = conn.execute("SELECT started_at,completed_at,status,settings_json,model_info_json FROM analysis_runs WHERE id=?", (run_id,)).fetchone()
@@ -81,14 +86,9 @@ def analysis_details(directory, run_id):
              "Documents: " + (", ".join(documents) or "None recorded"), f"Passages: {segments}",
              f"Passage size: {settings.get('analysis_unit', 'Not recorded')}"]
     lines.append(method_summary(settings, info))
-    segmentation = info.get('segmentation', settings.get('segmentation', {}))
+    segmentation = info.get('segmentation', {})
     if segmentation:
         lines.append('Passage splitting: ' + segmentation.get('method', 'Not recorded'))
-        if segmentation.get('experimental'):
-            lines.append(f"Experimental semantic sensitivity: {segmentation.get('semantic_threshold')}; not a confidence score")
-            if 'semantic_min_tokens' in segmentation:
-                lines.append(f"Semantic minimum passage target: {segmentation['semantic_min_tokens']} tokens; "
-                             f"avoided {segmentation.get('suppressed_semantic_breaks', 0)} short-passage splits")
         if 'speaker_turns' in segmentation:
             lines.append(f"Detected speaker turns: {segmentation['speaker_turns']}")
             lines.append(f"Documents using Auto fallback with all text retained: {segmentation.get('speaker_fallbacks', 0)}")
@@ -96,8 +96,7 @@ def analysis_details(directory, run_id):
             lines.append(f"Model input limit: {segmentation['max_tokens']} tokens (including special tokens)")
             lines.append(f"Oversized passages at preparation: {segmentation.get('oversized', 0)}")
             lines.append(f"Extra splits within sentences: {segmentation.get('forced_splits', 0)}")
-    lines.append('Truncation permission: ' + ('Allowed' if settings['allow_truncation'] else 'Not allowed')
-                 if 'allow_truncation' in settings else 'Truncation permission: Not recorded in this older analysis')
+    lines.append('Truncation permission: ' + ('Allowed' if settings.get('allow_truncation') else 'Not allowed'))
     if parent:
         lines.append("Refined from: " + analysis_title(parent[0], parent[1] or parent[2]))
     for key, label in [("analysis_style", "Discovery style"), ("min_topic_size", "Minimum evidence"),

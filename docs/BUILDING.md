@@ -96,5 +96,6 @@ License notices are copied to `resources/LICENSES/` and shipped inside the app.
 ## Source checkout without installers
 
 Developers can still run from source. Without `resources/engine`, the app uses an
-Ollama already running on the standard port; without `resources/models/embedding`,
-it falls back to a project's legacy `models/weights` folder.
+Ollama already running on the standard port. Theme finding needs
+`resources/models/embedding`: run `python scripts/fetch_resources.py` once, or set
+`DOC_TOPIC_MODEL_RESOURCES` to a folder that has it.

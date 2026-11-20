@@ -1,5 +1,5 @@
 """Modal transfer progress keeps editing disabled without blocking painting."""
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QDialog, QLabel, QProgressBar, QVBoxLayout
 
 
