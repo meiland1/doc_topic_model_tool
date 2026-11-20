@@ -18,6 +18,11 @@ src/qualitative_themes/
   export/         codebook / coded passages / reading guide
   runtime/        installed-app concerns: resource paths, Ollama engine, model packs, health
   gui/            Qt widgets, dialogs and worker threads
+    main_window.py      the window and its tabs; its methods are split into
+                        project_session.py, documents_page.py, local_setup.py and tasks.py
+    workers.py          the worker threads the main window starts
+    read_code/          the Read & code tab, one file per area (trees, reader, coding, notes...)
+    settings_form.py    keyword and naming controls shared by the Find themes and Adjust themes dialogs
 packaging/        PyInstaller spec, Windows installer, macOS DMG script
 scripts/          fetch bundled resources, build model packs
 tests/            pytest; runs headless (QT_QPA_PLATFORM=offscreen)
@@ -32,7 +37,7 @@ gui  ->  analysis, export, runtime  ->  storage  ->  domain
                       \-> importers
 ```
 
-`analysis` does import `storage` (it saves runs), and a few `storage` modules borrow from `analysis` (settings defaults in `preferences.py` and `provenance.py`, the segmenter in `segmentation.py`). Neither ever imports `gui`.
+`analysis` does import `storage` (it saves runs), and a few `storage` modules borrow from `analysis` (settings defaults in `preferences.py` and `provenance.py`). Neither ever imports `gui`.
 
 ## Ideas that everything else depends on
 
@@ -44,7 +49,7 @@ gui  ->  analysis, export, runtime  ->  storage  ->  domain
 
 **Analysis runs are snapshots.** A run stores its settings, segments and per-segment model suggestions. Running a new analysis never changes an older one. What the workspace shows for a theme comes from `storage.coding.effective_assignments()`: the researcher's active codings, plus that run's suggestions unless the researcher rejected or removed the same exact range for that theme. Rejections are stored per theme, so they keep applying wherever that theme identity is reused (for example after a refinement).
 
-**Save everything in one transaction, at the end.** Long operations do their work in memory and write in a single `connect()` block at the end (`topics.save_result`, `segmentation.create_segmentation_run`, `labels.label_run`, `refinement.apply_proposal`). Cancelling or failing before that point leaves the project exactly as it was.
+**Save everything in one transaction, at the end.** Long operations do their work in memory and write in a single `connect()` block at the end (`topics.save_result`, `labels.label_run`, `refinement.apply_proposal`). Cancelling or failing before that point leaves the project exactly as it was.
 
 **Offline by construction.** `runtime.offline.enable_offline_mode()` runs at import time in `app.py`, before any ML library loads. Model loading always passes `local_files_only=True`. The engine binds to 127.0.0.1 with proxies stripped from its environment.
 
@@ -65,7 +70,7 @@ The window is usable while the engine starts. When it's ready, `engine_started()
 
 ### Creating or opening a project
 
-`Hub` only emits signals; `MainWindow.create()` / `open()` / `open_recent()` do the work and end in `_show_project()`. That loads the saved analysis setup and workspace layout (both kept in `history_events`, see `storage/preferences.py`) and points each tab at the project. The first `connect()` on an older project runs the schema migration, and `migrations.py` keeps a copy of the old database first.
+`Hub` only emits signals; `MainWindow.create()` / `open()` / `open_recent()` do the work and end in `_show_project()`. That loads the saved analysis setup and workspace layout (both kept in `history_events`, see `storage/preferences.py`) and points each tab at the project. A project made with one of the 0.2 test versions is refused with a plain message (see the database section); nothing upgrades it.
 
 ### Importing
 
@@ -100,7 +105,7 @@ Theme naming runs after the analysis is already saved, so naming failing or bein
 
 ### Coding in the workspace
 
-The researcher selects text, then presses a number key, clicks the toolbar or uses Add. `CodingWorkspace.code_selection_as()` converts the selection to canonical offsets and pushes an `AddCodingCommand` (Ctrl+Z undoes it), which calls `storage.coding.add_coding()`. Then `reload_themes()` redraws from the database. The workspace never keeps its own copy of research decisions, so anything that changes the data just reloads.
+The researcher selects text, then presses a number key, clicks the toolbar or uses Add. `code_selection_as()` (in `gui/read_code/coding_actions.py`) converts the selection to canonical offsets and pushes an `AddCodingCommand` (Ctrl+Z undoes it), which calls `storage.coding.add_coding()`. Then `reload_themes()` redraws from the database. The workspace never keeps its own copy of research decisions, so anything that changes the data just reloads.
 
 Comments work the same way through `storage/comments.py`. Drafts autosave. Anything that leaves the current document calls `CommentsPanel.flush_pending()` first and stops if the draft can't be saved.
 
@@ -129,20 +134,20 @@ Anything slow runs in a `gui.worker.WorkerThread` subclass. The pattern is the s
 - Results come back through signals, which Qt delivers on the GUI thread. `run()` never touches widgets.
 - `AnalysisCancelled` becomes `cancelled`; any other exception becomes `failed(str)`.
 
-`MainWindow` allows one long task at a time. Analysis, naming, visualizations, exports and refinements all share the `_analysis_worker` slot, and `MainWindow.busy` is what every action checks before starting. Cancelling only sets a flag. The worker stops at its next `check_cancel()`, and HDBSCAN in particular can't be interrupted mid-fit.
+`MainWindow` allows one long task at a time. Analysis, naming, visualizations, exports and refinements all share the `_analysis_worker` slot, and `MainWindow.busy` is what every action checks before starting. Actions that need to explain why they can't start call `blocked_by_task("doing X")`, which shows the message and returns True. Cancelling only sets a flag. The worker stops at its next `check_cancel()`, and HDBSCAN in particular can't be interrupted mid-fit.
 
 SQLite connections are short-lived (`storage.database.connect()` opens, commits or rolls back, and closes), so a worker and the GUI never share one.
 
 ## The database
 
-One SQLite file per project, `project.sqlite`. The schema version is in `PRAGMA user_version`, currently 2.
+One SQLite file per project, `project.sqlite`. The schema version is in `PRAGMA user_version`, currently 3. `storage/migrations.py` creates the whole schema in one step; there are no upgrade steps.
 
 | Table | What it holds |
 |---|---|
 | `project` | id, name, created date |
 | `documents` | original name, path of the source copy, hash, extracted text, status (ready/removed) |
 | `document_pages` | page/paragraph spans inside the text |
-| `analysis_runs` | settings JSON, model info JSON, status (segmented/proposed/completed/cancelled) |
+| `analysis_runs` | settings JSON, model info JSON, status (proposed/completed/cancelled) |
 | `segments` | the passages of a run (offsets + text hash) |
 | `themes` | generated label, researcher label, status (active/proposed/merged/discarded) |
 | `model_suggestions` | segment -> theme for one run, with the BERTopic topic id |
@@ -153,18 +158,20 @@ One SQLite file per project, `project.sqlite`. The schema version is in `PRAGMA 
 | `history_events` | audit log, plus a couple of saved preferences |
 | `documents_fts` | full-text index for search (only if SQLite has FTS5) |
 
-To change the schema: bump `SCHEMA_VERSION` in `storage/migrations.py`, add an `if version == N:` step, keep it idempotent, and add a test that opens an old-format project.
+Projects from the 0.2 test versions (versions 1 and 2) were only ever test projects, so 0.3 doesn't convert them: `migrate()` raises `OLD_PROJECT_MESSAGE` and leaves the file alone, and restore refuses their backups the same way. To change the schema: edit `SCHEMA`, bump `SCHEMA_VERSION`, and decide then whether real projects exist that need an upgrade step.
 
 ## Common changes
 
-- **New analysis option:** add a field with a default to `AnalysisSettings` (older runs still load), validate it in `validate_settings()`, use it in `analysis/topics.py`, and add the control in `gui/analysis_setup.py`. It's saved with each run automatically.
+- **New analysis option:** add a field with a default to `AnalysisSettings` (older runs still load), validate it in `validate_settings()`, use it in `analysis/topics.py`, and add the control in `gui/analysis_setup.py` (or in `gui/settings_form.py` if the Adjust themes dialog needs it too). It's saved with each run automatically.
 - **New kind of history event:** write it with the same `INSERT INTO history_events` pattern, then add a readable summary branch in `storage/history.history_events()`.
-- **New background task:** subclass `WorkerThread` with the usual signals, start it from `MainWindow` in the `_analysis_worker` slot, and call `track_task()` so it gets the progress strip and Cancel.
+- **New background task:** subclass `WorkerThread` with the usual signals, start it from `gui/tasks.py` in the `_analysis_worker` slot, and call `track_task()` so it gets the progress strip and Cancel.
 - **New tab:** build it in `MainWindow.__init__`, give it a `set_project()` / `set_run()` method, and call that from `_show_project()`.
 
 ## Tests
 
-`python -m pytest -q` from the repo root. `tests/conftest.py` runs Qt offscreen and points app data at a temp folder, so tests never touch your real recent-projects list or model store. Most analysis tests pass a fake `backend=` to `analyze()`, so they don't need model weights. `test_model_integration.py` holds the real-model tests (marker `integration`). The full BERTopic run only happens when `DOC_TOPIC_MODEL_WEIGHTS` points at local weights; the visualization one just needs BERTopic installed.
+`python -m pytest -q` from the repo root. `tests/conftest.py` runs Qt offscreen and points app data at a temp folder, so tests never touch your real recent-projects list or model store. Most analysis tests pass a fake `backend=` to `analyze()`, so they don't need model weights. `test_model_integration.py` holds the real-model tests (marker `integration`). The full BERTopic run only happens when the embedding model is in `resources/` (run `scripts/fetch_resources.py`, or point `DOC_TOPIC_MODEL_RESOURCES` at a folder that has it); the visualization one just needs BERTopic installed. Tests that fake the encoder use `fake_model_resources()` from `conftest.py`.
+
+GitHub runs the suite on every pull request (`.github/workflows/tests.yml`).
 
 ## Packaging
 

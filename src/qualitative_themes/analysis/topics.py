@@ -30,7 +30,6 @@ from qualitative_themes.analysis.settings import AnalysisSettings, effective_par
 
 class AnalysisCancelled(Exception):
     """Raised by check_cancel(). Workers catch it and report "Cancelled"; nothing was saved."""
-    pass
 
 
 @dataclass(frozen=True)
@@ -61,6 +60,11 @@ class TopicOutput:
     model_info: dict = field(default_factory=dict)
 
 
+# Saved with each run as segmentation['method'] so a run records how it was split.
+SEGMENTATION_METHODS = {'Automatic passages': 'automatic-token-v1', 'Interview passages': 'interview-turns-v1',
+                        'Paragraphs': 'paragraphs-v1', 'Whole document': 'whole-document-v1'}
+
+
 def check_cancel(should_cancel):
     """Raise AnalysisCancelled if the caller asked to stop. Cheap; call it often."""
     if should_cancel and should_cancel():
@@ -79,6 +83,8 @@ def prepare_passages(directory, unit, document_ids, exclude_interviewer=False, i
     """
     if not document_ids or len(set(document_ids)) != len(document_ids):
         raise ValueError("Select one or more distinct documents to analyze together.")
+    if unit not in SEGMENTATION_METHODS:
+        raise ValueError("Choose a supported passage type.")
     if diagnostics is not None or unit in TOKEN_SAFE_UNITS:
         from qualitative_themes.analysis.token_budget import load_token_budget
         try:
@@ -89,9 +95,7 @@ def prepare_passages(directory, unit, document_ids, exclude_interviewer=False, i
             if diagnostics is not None:
                 diagnostics['token_error'] = str(exc)
     stats = diagnostics if diagnostics is not None else {}
-    stats.update({'method': ('semantic-adjacent-min-v2' if unit == 'Semantic passages' else
-                            'interview-turns-v1' if unit == 'Interview passages' else
-                            'automatic-token-v1' if unit in TOKEN_SAFE_UNITS else 'legacy-word-v1'),
+    stats.update({'method': SEGMENTATION_METHODS[unit],
                   'preprocessing': MODEL_TEXT_VERSION, 'forced_splits': 0})
     if unit == 'Interview passages':
         stats.update({'speaker_turns': 0, 'speaker_fallbacks': 0, 'fallback_document_ids': []})
@@ -104,13 +108,6 @@ def prepare_passages(directory, unit, document_ids, exclude_interviewer=False, i
         raise ValueError("A selected document is not ready or was not found.")
     from qualitative_themes.analysis.speakers import interviewer_ranges
     passages = []
-    semantic_provider = None
-    active_settings = settings or AnalysisSettings()
-    if unit == 'Semantic passages':
-        from qualitative_themes.analysis.semantic import sentence_vectors
-        stats.update({'experimental': True, 'semantic_threshold': active_settings.semantic_threshold,
-                      'semantic_min_tokens': active_settings.semantic_min_tokens})
-        semantic_provider = lambda texts: sentence_vectors(texts, directory, active_settings, should_cancel, stats)
     for doc, text in rows:
         check_cancel(should_cancel)
         excluded = interviewer_ranges(text, interviewer_labels) if exclude_interviewer else ()
@@ -120,9 +117,7 @@ def prepare_passages(directory, unit, document_ids, exclude_interviewer=False, i
                 excluded = ()
                 stats['fallback_document_ids'].append(doc)
         for i, span in enumerate(segment_text(text, unit, token_budget=token_budget, excluded=excluded,
-                                              stats=stats, should_cancel=should_cancel, semantic_provider=semantic_provider,
-                                              semantic_threshold=active_settings.semantic_threshold,
-                                              semantic_min_tokens=active_settings.semantic_min_tokens)):
+                                              stats=stats, should_cancel=should_cancel)):
             passages.append(Passage(str(uuid4()), doc, i, span.start_char, span.end_char, model_text(text, span, excluded),
                                     hashlib.sha256(text[span.start_char:span.end_char].encode()).hexdigest()))
     passages = [passage for passage in passages if passage.text]
@@ -295,7 +290,7 @@ def fit_bertopic(passages, settings, directory, progress, should_cancel):
     encoder = load_encoder(settings, directory)
     timings['encoder_load_seconds'] = perf_counter() - stage_started
     stage_started = perf_counter()
-    # Check even legacy passage modes against the encoder actually being used.
+    # Paragraph and whole-document passages can exceed the encoder's limit; check them.
     # Test/injected embedding providers may not expose a tokenizer.
     if getattr(encoder, 'tokenizer', None) is not None:
         oversized = sum(len(encoder.tokenizer.encode(p.text, add_special_tokens=True,
@@ -358,7 +353,7 @@ def fit_bertopic(passages, settings, directory, progress, should_cancel):
         try:
             model.fit_transform([p.text for p in selected], embeddings=selected_embeddings.copy())
         except ValueError as exc:
-            raise ValueError("The corpus could not form themes. Try more varied text, more documents, or Short passages. " + str(exc)) from exc
+            raise ValueError("The corpus could not form themes. Try more varied text, more documents, or Paragraphs. " + str(exc)) from exc
         check_cancel(should_cancel)
         count = apply_topic_goal(model, [p.text for p in selected], selected_settings.requested_theme_count, progress)
         topics = [int(t) for t in model.topics_]

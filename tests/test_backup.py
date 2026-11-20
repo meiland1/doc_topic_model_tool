@@ -143,7 +143,7 @@ def test_close_flushes_comment_before_autosave_timer(project):
 
 
 def test_failed_comment_flush_keeps_text_and_document(project, monkeypatch):
-    from qualitative_themes.gui.comments_panel import CommentsPanel
+    from qualitative_themes.gui.read_code.comments_panel import CommentsPanel
     study, doc = project
     panel = CommentsPanel()
     panel.set_document(study.directory, doc)

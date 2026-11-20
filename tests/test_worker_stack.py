@@ -20,7 +20,7 @@ def test_other_platform_defaults_unchanged():
 
 def test_owned_workers_use_shared_base():
     import importlib
-    for name in ('analysis_setup', 'history', 'main_window', 'new_project', 'project_backup', 'refinement', 'visualizations'):
+    for name in ('analysis_setup', 'history', 'workers', 'new_project', 'project_backup', 'refinement', 'visualizations'):
         module = importlib.import_module('qualitative_themes.gui.' + name)
         for value in vars(module).values():
             if isinstance(value, type) and value.__module__ == module.__name__ and issubclass(value, QThread):

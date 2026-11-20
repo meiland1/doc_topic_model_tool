@@ -5,10 +5,9 @@ import pytest
 from PySide6.QtGui import QTextCursor
 
 from qualitative_themes.storage import comments as store
-from qualitative_themes.storage.coding import add_coding, add_note, create_theme, occurrences
+from qualitative_themes.storage.coding import add_coding, create_theme, occurrences
 from qualitative_themes.storage.database import connect, create_project
 from qualitative_themes.storage.documents import import_document
-from qualitative_themes.storage.migrations import SCHEMA_VERSION
 
 TEXT = ("The clinic is forty minutes away by bus. The bus route changed twice.\n\n"
         "We had to redo the intake paperwork. The clinic wanted the insurance card again.")
@@ -51,26 +50,21 @@ def test_comments_survive_coding_removal(project):
     assert store.list_threads(directory, doc)[0][0].body == "note on the coding"
 
 
-def test_v1_project_upgrades_with_backup_and_migrated_passage_notes(project):
-    directory, doc = project
-    theme = create_theme(directory, "Transport")
-    coding = add_coding(directory, doc, 4, 10, theme)
-    add_note(directory, "old passage note", coding_id=coding)
+def test_older_test_version_project_is_refused_and_left_unchanged(project):
+    directory, _doc = project
     database = directory / "project.sqlite"
     raw = sqlite3.connect(database)
-    raw.executescript("DROP TABLE comments; DROP TABLE IF EXISTS documents_fts; "
-                      "DROP TRIGGER IF EXISTS documents_fts_insert; DROP TRIGGER IF EXISTS documents_fts_update; "
-                      "DROP TRIGGER IF EXISTS documents_fts_delete; PRAGMA user_version = 1;")
+    raw.execute("PRAGMA user_version = 2")
     raw.close()
-    with connect(directory) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-    assert (directory / "project.sqlite.v1-backup").is_file()
-    thread = store.list_threads(directory, doc)[0][0]
-    assert thread.body == "old passage note" and thread.quote == "clinic"
+    before = database.read_bytes()
+    with pytest.raises(ValueError, match="older test version"):
+        with connect(directory):
+            pass
+    assert database.read_bytes() == before
 
 
 def make_workspace(directory, doc):
-    from qualitative_themes.gui.coding_workspace import CodingWorkspace
+    from qualitative_themes.gui.read_code import CodingWorkspace
     w = CodingWorkspace()
     w.set_project(directory)
     w.document_choice.setCurrentIndex(w.document_choice.findData(doc))

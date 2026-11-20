@@ -1,0 +1,22 @@
+# Runs the test suite on every pull request and on pushes to main, so a change
+# shows pass/fail before it's merged. Takes about 5 minutes.
+# The full installer build is separate (release.yml) and only runs on a tag.
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0 libgl1
+      # CPU-only PyTorch keeps this job fast; the tests never need a GPU.
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -e ".[analysis,test]"
+      - run: QT_QPA_PLATFORM=offscreen python -m pytest -q

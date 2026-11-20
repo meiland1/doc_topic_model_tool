@@ -159,6 +159,18 @@ class LabelingTests(unittest.TestCase):
         self.assertEqual([m["name"] for m in list_local_models(lambda: client)], ["local:small"])
         self.assertTrue(client.closed)
 
+    def test_model_loading_is_announced_once_on_first_real_request(self):
+        # Uncategorized (-1) comes first and is skipped without a request, so the
+        # loading notice belongs to the first theme that actually calls the engine.
+        messages, client = [], MockClient()
+        label_run(self.directory, self.run, "local:small", client_factory=lambda: client,
+                  progress=messages.append)
+        loading = [m for m in messages if "into memory" in m]
+        self.assertEqual(len(loading), 1)
+        self.assertTrue(loading[0].startswith("Naming theme 2/"))
+        self.assertIn("local:small", loading[0])
+        self.assertEqual(len(client.posts), 2)
+
     def test_large_run_skips_automatic_naming_without_contacting_engine(self):
         with connect(self.directory) as conn:
             info = json.loads(conn.execute('SELECT model_info_json FROM analysis_runs WHERE id=?', (self.run,)).fetchone()[0])

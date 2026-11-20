@@ -2,18 +2,12 @@
 import re
 from dataclasses import dataclass
 
-UNITS = {
-    "Automatic passages": None,
-    "Interview passages": None,
-    "Semantic passages": None,
-    "Short passages": (100, 125),
-    "Standard passages": (200, 250),
-    "Long passages": (375, 450),
-    "Paragraphs": None,
-    "Whole document": None,
-}
+# Passage types offered in the Find themes dialog. The first is the default.
+UNITS = ("Automatic passages", "Interview passages", "Paragraphs", "Whole document")
+DEFAULT_UNIT = UNITS[0]
 
-TOKEN_SAFE_UNITS = {'Automatic passages', 'Interview passages', 'Semantic passages'}
+# These two are packed to fit the embedding model's token limit.
+TOKEN_SAFE_UNITS = {'Automatic passages', 'Interview passages'}
 
 _WORDS = re.compile(r"\S+")
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+")
@@ -58,23 +52,12 @@ def _sentences(text: str, paragraph: SegmentRange) -> list[SegmentRange]:
     return [span for a, b in zip(starts, ends) if (span := _trim(text, a, b))]
 
 
-def _split_oversized(text: str, span: SegmentRange, target: int, maximum: int) -> list[SegmentRange]:
-    """Split a span that's still too long at word boundaries into ~`target`-word pieces."""
-    words = list(_WORDS.finditer(text, span.start_char, span.end_char))
-    if len(words) <= maximum:
-        return [span]
-    return [SegmentRange(words[i].start(), words[min(i + target, len(words)) - 1].end())
-            for i in range(0, len(words), target)]
-
-
-def segment_text(text: str, unit: str = "Standard passages", *, token_budget=None,
-                 excluded=(), stats=None, should_cancel=None, semantic_provider=None,
-                 semantic_threshold=0.65, semantic_min_tokens=128) -> list[SegmentRange]:
+def segment_text(text: str, unit: str = DEFAULT_UNIT, *, token_budget=None,
+                 excluded=(), stats=None, should_cancel=None) -> list[SegmentRange]:
     """Return ordered nonoverlapping [start,end) spans; gaps contain whitespace only.
 
-    Pre: `unit` is a key of UNITS. Token-safe units need a token budget (loaded
-    from the bundled tokenizer if not passed) and Semantic passages also need
-    `semantic_provider`.
+    Pre: `unit` is one of UNITS. Token-safe units need a token budget (loaded
+    from the bundled tokenizer if not passed).
     Post: every non-whitespace character of `text` is inside exactly one span
     (checked by _validate). `excluded` only affects what counts toward token
     limits, not the spans themselves.
@@ -87,11 +70,6 @@ def segment_text(text: str, unit: str = "Standard passages", *, token_budget=Non
         if token_budget is None:
             from qualitative_themes.analysis.token_budget import load_token_budget
             token_budget = load_token_budget()
-        if unit == 'Semantic passages':
-            from qualitative_themes.analysis.semantic import sentence_vectors, semantic_spans
-            provider = semantic_provider or (lambda texts: sentence_vectors(texts, should_cancel=should_cancel, stats=stats))
-            return semantic_spans(text, token_budget, provider, semantic_threshold, excluded, stats, should_cancel,
-                                  min_tokens=semantic_min_tokens)
         if unit == 'Interview passages':
             from qualitative_themes.analysis.speakers import reliable_transcript_turns
             turns = reliable_transcript_turns(text)
@@ -117,31 +95,7 @@ def segment_text(text: str, unit: str = "Standard passages", *, token_budget=Non
         return _automatic(text, token_budget, excluded, stats, should_cancel)
     if unit == "Whole document":
         return [_trim(text, 0, len(text))]
-    paragraphs = _paragraphs(text)
-    if unit == "Paragraphs":
-        return paragraphs
-    target, maximum = UNITS[unit]
-    atoms = [atom for paragraph in paragraphs
-             for sentence in _sentences(text, paragraph)
-             for atom in _split_oversized(text, sentence, target, maximum)]
-    result: list[SegmentRange] = []
-    current: SegmentRange | None = None
-    count = 0
-    for atom in atoms:
-        words = len(_WORDS.findall(text, atom.start_char, atom.end_char))
-        if current and count + words > maximum:
-            result.append(current)
-            current, count = None, 0
-        current = SegmentRange(current.start_char if current else atom.start_char, atom.end_char)
-        count += words
-        # A coherent passage is preferred over filling to the maximum.
-        if count >= target:
-            result.append(current)
-            current, count = None, 0
-    if current:
-        result.append(current)
-    _validate(text, result)
-    return result
+    return _paragraphs(text)
 
 
 def _automatic(text, budget, excluded, stats, should_cancel, blocks=None):

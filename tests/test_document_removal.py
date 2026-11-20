@@ -10,7 +10,7 @@ from qualitative_themes.storage.database import connect, create_project, open_pr
 from qualitative_themes.storage.documents import (
     get_document, import_document, list_documents, remove_documents, restore_documents,
 )
-from qualitative_themes.storage.segmentation import create_segmentation_run, list_segments
+from qualitative_themes.storage.history import segment_count
 
 
 class DocumentRemovalTests(unittest.TestCase):
@@ -56,12 +56,12 @@ class DocumentRemovalTests(unittest.TestCase):
 
     def test_future_preview_all_excludes_removed_and_selected_analysis_rejects_it(self):
         remove_documents(self.directory, [self.docs[0]])
-        run, count = create_segmentation_run(self.directory, "Paragraphs")
-        self.assertEqual(count, 6)
-        self.assertEqual({row[0] for row in list_segments(self.directory, run)}, {self.docs[1]})
+        ready = [doc for doc, _name, _status in list_documents(self.directory)]
+        self.assertEqual(ready, [self.docs[1]])
+        self.assertEqual(len(prepare_passages(self.directory, "Paragraphs", ready)), 6)
         with self.assertRaises(ValueError):
             prepare_passages(self.directory, "Paragraphs", [self.docs[0]])
-        self.assertEqual(len(list_segments(self.directory, self.run)), 12)
+        self.assertEqual(segment_count(self.directory, self.run), 12)
 
     def test_restore_returns_same_document_and_decisions(self):
         before = self.saved_research()

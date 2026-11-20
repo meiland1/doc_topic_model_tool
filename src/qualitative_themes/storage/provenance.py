@@ -20,7 +20,8 @@ def method_label(settings, manual=False):
 def topic_provenance(settings, info, topic):
     """Where one BERTopic topic came from: {'origins': [...], 'supplied_names': [...]}.
 
-    Prefers what the run stored; reconstructs it for older runs.
+    Uses what the run stored; otherwise works it out from the run's settings
+    (this is how save_result builds the stored value in the first place).
     """
     key = str(topic)
     stored = info.get('topic_provenance', {}).get(key)

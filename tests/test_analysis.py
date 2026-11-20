@@ -85,16 +85,6 @@ class AnalysisRepositoryTests(unittest.TestCase):
         first, _ = analyze(self.directory, "Paragraphs", [self.docs[0]], settings=AnalysisSettings(min_topic_size=2), backend=self.fake)
         self.assertIn(other, {row[0] for row in list_themes(self.directory, first)})
 
-    def test_legacy_run_corpus_uses_segments(self):
-        from qualitative_themes.storage.coding import analysis_document_ids
-        run, _ = analyze(self.directory, "Paragraphs", [self.docs[1]], settings=AnalysisSettings(min_topic_size=2), backend=self.fake)
-        with connect(self.directory) as conn:
-            settings = json.loads(conn.execute("SELECT settings_json FROM analysis_runs WHERE id=?", (run,)).fetchone()[0])
-            del settings["document_ids"]
-            conn.execute("UPDATE analysis_runs SET settings_json=? WHERE id=?", (json.dumps(settings), run))
-        self.assertEqual(analysis_document_ids(self.directory, run), {self.docs[1]})
-        self.assertEqual(analysis_document_ids(self.directory, "missing"), set())
-
     def test_corpus_mapping_exact_offsets_outliers_and_reopen(self):
         run = self.run_fake()
         mapping = self.mapping(run)
@@ -179,7 +169,7 @@ class AnalysisRepositoryTests(unittest.TestCase):
         self.assertNotIn(theme, [t[0] for t in list_themes(self.directory, run)])
 
     def test_small_corpus_help_and_selection_validation(self):
-        with self.assertRaisesRegex(ValueError, "Short passages"):
+        with self.assertRaisesRegex(ValueError, "Paragraphs"):
             analyze(self.directory, "Whole document", self.docs, backend=self.fake)
         with self.assertRaises(ValueError):
             analyze(self.directory, "Paragraphs", [self.docs[0], "missing"], backend=self.fake)

@@ -4,7 +4,7 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton,
                                QTextBrowser, QVBoxLayout)

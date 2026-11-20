@@ -3,20 +3,21 @@ from types import SimpleNamespace
 import pytest
 
 from qualitative_themes.analysis.topics import AnalysisCancelled
-from qualitative_themes.gui.main_window import AnalysisWorker, MainWindow
+from qualitative_themes.gui.main_window import MainWindow
+from qualitative_themes.gui.workers import AnalysisWorker
 
 
 @pytest.mark.parametrize('outcome', ['success', 'failure', 'cancel'])
 def test_saved_result_delivered_before_naming(monkeypatch, tmp_path, qt_test_application, outcome):
     events = []
-    monkeypatch.setattr('qualitative_themes.gui.main_window.analyze', lambda *a, **kw: ('saved-run', 12))
+    monkeypatch.setattr('qualitative_themes.gui.workers.analyze', lambda *a, **kw: ('saved-run', 12))
     def naming(*a, **kw):
         assert events == [('saved-run', 12)]
         if outcome == 'failure':
             raise RuntimeError('naming unavailable')
         if outcome == 'cancel':
             raise AnalysisCancelled()
-    monkeypatch.setattr('qualitative_themes.gui.main_window.label_run', naming)
+    monkeypatch.setattr('qualitative_themes.gui.workers.label_run', naming)
     worker = AnalysisWorker(tmp_path, 'Paragraphs', [], name_themes=True)
     worker.result.connect(lambda run, count: events.append((run, count)))
     worker.naming_complete.connect(lambda run: events.append(('named', run)))
@@ -48,11 +49,11 @@ def test_gui_receives_saved_result_while_naming_is_blocked(tmp_path, qt_test_app
     from threading import Event
     from PySide6.QtCore import QEventLoop, QTimer
     release, started = Event(), Event()
-    monkeypatch.setattr('qualitative_themes.gui.main_window.analyze', lambda *a, **kw: ('saved', 3))
+    monkeypatch.setattr('qualitative_themes.gui.workers.analyze', lambda *a, **kw: ('saved', 3))
     def naming(*a, **kw):
         started.set()
         assert release.wait(10)
-    monkeypatch.setattr('qualitative_themes.gui.main_window.label_run', naming)
+    monkeypatch.setattr('qualitative_themes.gui.workers.label_run', naming)
     worker = AnalysisWorker(tmp_path, 'Paragraphs', [], name_themes=True)
     received = []
     loop = QEventLoop()

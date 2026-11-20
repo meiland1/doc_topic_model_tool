@@ -32,7 +32,8 @@ def test_real_guided_and_zero_shot_pipelines():
     passages=[SimpleNamespace(id=str(i),text=text) for i,text in enumerate([
         'clinic healthcare medication treatment patient '+str(i) for i in range(6)
     ]+['satellite rocket orbit launch spacecraft '+str(i) for i in range(6)])]
-    with TemporaryDirectory() as temporary, patch('sentence_transformers.SentenceTransformer',LocalTestEncoder):
+    from conftest import fake_model_resources
+    with TemporaryDirectory() as temporary, fake_model_resources(), patch('sentence_transformers.SentenceTransformer',LocalTestEncoder):
         for method in ['guided','zero_shot']:
             settings=AnalysisSettings(analysis_method=method,min_topic_size=2,min_samples=1,n_neighbors=3,
                 topic_definitions=(('Healthcare access','clinic, healthcare, treatment' if method=='guided' else 'healthcare clinic treatment'),))

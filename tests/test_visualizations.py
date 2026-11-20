@@ -1,6 +1,5 @@
 """Read-only visualization preparation, mappings, projections, and cancellation."""
 import json
-from unittest.mock import patch
 import numpy as np
 import test_exports as export_fixtures
 from qualitative_themes.analysis.visualizations import (visualization_snapshot, restored_theme_mapping,

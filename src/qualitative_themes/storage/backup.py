@@ -18,7 +18,7 @@ import tempfile
 from datetime import datetime, timezone
 from zipfile import ZipFile, ZIP_DEFLATED
 
-from qualitative_themes.storage.migrations import SCHEMA_VERSION
+from qualitative_themes.storage.migrations import OLD_PROJECT_MESSAGE, SCHEMA_VERSION
 
 MAX_FILES = 100_000
 MAX_BYTES = 20 * 1024**3
@@ -52,8 +52,9 @@ def _check_database(directory):
     db = directory / 'project.sqlite'
     with closing(sqlite3.connect(db.as_uri() + '?mode=ro', uri=True)) as conn:
         version = conn.execute('PRAGMA user_version').fetchone()[0]
-        if not 1 <= version <= SCHEMA_VERSION:
-            raise ValueError('This backup requires a different version of the application.')
+        if version != SCHEMA_VERSION:
+            raise ValueError(OLD_PROJECT_MESSAGE if version < SCHEMA_VERSION
+                             else 'This backup requires a newer version of the application.')
         if conn.execute('PRAGMA integrity_check').fetchone()[0] != 'ok' or conn.execute('PRAGMA foreign_key_check').fetchone():
             raise ValueError('The project database failed its integrity check.')
         if not conn.execute('SELECT id FROM project').fetchone():

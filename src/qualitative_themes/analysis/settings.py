@@ -1,5 +1,5 @@
 """Single preset mapping and validation, independent of Qt and model weights."""
-from dataclasses import asdict, dataclass, fields
+from dataclasses import dataclass, fields
 import re
 import math
 
@@ -71,8 +71,6 @@ class AnalysisSettings:
     ngram_range: tuple[int, int] = (1, 2)
     name_themes: bool = False
     allow_truncation: bool = False
-    semantic_threshold: float = 0.65
-    semantic_min_tokens: int = 128
     ollama_model: str | None = None
     # Leave interviewer turns out of model input (source text and offsets are unchanged).
     exclude_interviewer: bool = False
@@ -141,11 +139,6 @@ def validate_settings(settings, count):
     Pre: called after passages are prepared so the minimum-size checks are real.
     Post: returns None, or raises ValueError with what to change.
     """
-    if type(settings.semantic_min_tokens) is not int or not 0 <= settings.semantic_min_tokens <= 4096:
-        raise ValueError('Semantic minimum passage target must be between 0 and 4096 tokens.')
-    if (isinstance(settings.semantic_threshold, bool) or not isinstance(settings.semantic_threshold, (int, float))
-            or not math.isfinite(settings.semantic_threshold) or not 0 <= settings.semantic_threshold <= 1):
-        raise ValueError('Semantic boundary sensitivity must be between 0 and 1.')
     if type(settings.allow_truncation) is not bool:
         raise ValueError('Choose whether to allow truncation of oversized passages.')
     validate_method_settings(settings)
@@ -165,7 +158,7 @@ def validate_settings(settings, count):
     minimum = 1 if settings.analysis_method == "zero_shot" else max(3, settings.min_topic_size)
     if count < minimum:
         raise ValueError(f"Only {count} passages are available; these settings need at least {minimum}. "
-                         "Lower minimum evidence, choose Short passages or Paragraphs, or add documents. "
+                         "Lower minimum evidence, choose Paragraphs, or add documents. "
                          "Discovery needs at least 3 passages.")
     target = settings.requested_theme_count
     if target is not None and (type(target) is not int or not 1 <= target <= count):

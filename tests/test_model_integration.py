@@ -1,7 +1,5 @@
 """Opt-in real-model smoke check; never downloads weights during a test."""
-import os
 from pathlib import Path
-import shutil
 from dataclasses import replace
 
 import pytest
@@ -10,16 +8,14 @@ from qualitative_themes.analysis.topics import analyze
 from qualitative_themes.storage.coding import list_themes, occurrences
 from qualitative_themes.storage.database import create_project
 from qualitative_themes.storage.documents import import_document
+from qualitative_themes.runtime.paths import bundled_embedding_model
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(not os.environ.get("DOC_TOPIC_MODEL_WEIGHTS"),
-                    reason="Opt-in: set DOC_TOPIC_MODEL_WEIGHTS to a previously downloaded models/weights directory.")
+@pytest.mark.skipif(bundled_embedding_model() is None,
+                    reason="Opt-in: run scripts/fetch_resources.py (or set DOC_TOPIC_MODEL_RESOURCES) first.")
 def test_real_bertopic_local_corpus(tmp_path):
     project = create_project(tmp_path / "project", "Model smoke")
-    cached = Path(os.environ["DOC_TOPIC_MODEL_WEIGHTS"])
-    assert cached.is_dir(), "DOC_TOPIC_MODEL_WEIGHTS must point to a local models/weights folder."
-    shutil.copytree(cached, project.directory / "models" / "weights")
     corpus = Path(__file__).resolve().parents[1] / "examples" / "smoke_corpus"
     docs = [import_document(project.directory, path).document_id for path in sorted(corpus.glob("*.txt"))]
     run, count = analyze(project.directory, "Paragraphs", docs, progress=print)

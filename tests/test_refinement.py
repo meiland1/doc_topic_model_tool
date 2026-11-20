@@ -163,7 +163,14 @@ class RefinementTests(unittest.TestCase):
         self.assertEqual(self.status(proposal), "proposed")
 
     def test_changed_segmentation_never_guesses_identity(self):
-        proposal = self.proposal("discover", unit="Short passages", discovery_backend=self.discovery)
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from qualitative_themes.analysis.token_budget import TokenBudget
+        # A word-counting stand-in tokenizer: each long paragraph splits into several passages.
+        tokenizer = SimpleNamespace(encode=lambda text, **kwargs: text.split())
+        budget = TokenBudget(tokenizer, 120, {"model": "test", "revision": "1", "max_tokens": 120})
+        with patch("qualitative_themes.analysis.token_budget.load_token_budget", lambda *a, **k: budget):
+            proposal = self.proposal("discover", unit="Automatic passages", discovery_backend=self.discovery)
         review = review_proposal(self.directory, proposal)
         self.assertGreater(review["new_passages"], 0)
         self.assertTrue(all(item["recommended"] is None for item in review["themes"]))
@@ -229,7 +236,7 @@ class RefinementTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fresh discovery"):
             self.proposal(settings=replace(self.settings, min_samples=4))
         with self.assertRaisesRegex(ValueError, "fresh discovery"):
-            self.proposal(unit="Short passages")
+            self.proposal(unit="Whole document")
 
     def test_failed_apply_rolls_back_earlier_theme_updates(self):
         unrelated = create_theme(self.directory, "Unrelated manual theme")

@@ -6,7 +6,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from qualitative_themes.analysis.topics import AnalysisSettings, TopicOutput, analyze
-from qualitative_themes.gui.coding_workspace import CodingWorkspace
+from qualitative_themes.gui.read_code import CodingWorkspace
 from qualitative_themes.storage.coding import assignment_origin, list_notes
 from qualitative_themes.storage.database import create_project
 from qualitative_themes.storage.documents import import_document
@@ -156,7 +156,7 @@ def test_unaccepted_generated_theme_can_be_renamed(generated_workspace, monkeypa
 
 
 def test_refinement_review_cancel_and_apply(generated_workspace):
-    from qualitative_themes.analysis.refinement import propose_refinement, review_proposal, list_proposals
+    from qualitative_themes.analysis.refinement import propose_refinement, list_proposals
     from qualitative_themes.analysis.topics import list_analysis_runs
     from qualitative_themes.gui.refinement import RefinementReviewDialog
     app, workspace, docs, directory, run = generated_workspace
@@ -276,7 +276,7 @@ def test_five_passage_docx_enables_analyze_with_small_corpus_warning(tmp_path):
     doc = import_document(directory, path).document_id
     dialog = AnalysisSetupDialog(directory, [(doc, path.name)],
         AnalysisSettings(min_topic_size=2, name_themes=True, ollama_model="llama3.1"),
-        "Short passages", ["llama3.1"])
+        "Paragraphs", ["llama3.1"])
     loop = QEventLoop()
     timer = QTimer()
     timer.timeout.connect(lambda: loop.quit() if dialog._inspection is None else None)

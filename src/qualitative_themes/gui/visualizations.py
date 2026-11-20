@@ -1,7 +1,7 @@
 """Offline, built-in BERTopic plots and evidence navigation."""
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from PySide6.QtCore import Qt, QThread, Signal, QUrl
+from PySide6.QtCore import Qt, Signal, QUrl
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton,
     QLabel, QTabWidget, QPlainTextEdit, QSplitter, QListWidget, QListWidgetItem)
 from qualitative_themes.analysis.topics import AnalysisCancelled, list_analysis_runs

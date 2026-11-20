@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import json
 from uuid import uuid4
 
+from qualitative_themes.analysis.segment import DEFAULT_UNIT, UNITS
 from qualitative_themes.analysis.settings import AnalysisSettings, settings_from_dict
 from qualitative_themes.storage.database import connect
 
@@ -30,16 +31,17 @@ def load_setup(directory):
         row = conn.execute("SELECT details_json FROM history_events WHERE event_type='analysis_setup_selected' ORDER BY rowid DESC LIMIT 1").fetchone()
         if row:
             data = json.loads(row[0])
-            return settings_from_dict(data["settings"]), data["unit"]
+            return settings_from_dict(data["settings"]), data["unit"] if data["unit"] in UNITS else DEFAULT_UNIT
         row = conn.execute("SELECT settings_json, model_info_json FROM analysis_runs WHERE status='completed' ORDER BY rowid DESC LIMIT 1").fetchone()
         if row:
             data = json.loads(row[0])
             settings = settings_from_dict(data)
             attempts = json.loads(row[1]).get("labeling_attempts", [])
-            if "ollama_model" not in data and attempts:
+            if settings.ollama_model is None and attempts:
                 settings = replace(settings, ollama_model=attempts[-1].get("model"))
-            return settings, data.get("analysis_unit", "Standard passages")
-    return AnalysisSettings(), "Standard passages"
+            unit = data.get("analysis_unit")
+            return settings, unit if unit in UNITS else DEFAULT_UNIT
+    return AnalysisSettings(), DEFAULT_UNIT
 
 
 def result_summary(directory, run_id):

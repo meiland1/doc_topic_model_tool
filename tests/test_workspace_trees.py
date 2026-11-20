@@ -1,7 +1,7 @@
 """Offscreen navigation checks with exact source ranges and no model downloads."""
 import pytest
 from PySide6.QtCore import Qt
-from qualitative_themes.gui.coding_workspace import CodingWorkspace
+from qualitative_themes.gui.read_code import CodingWorkspace
 from qualitative_themes.analysis.topics import analyze, AnalysisSettings, TopicOutput
 from qualitative_themes.storage.database import create_project, connect
 from qualitative_themes.storage.documents import import_document
@@ -79,8 +79,14 @@ def test_passage_nodes_are_lazy_and_analysis_scope_excludes_other_docs(tree_work
     w,directory,docs,themes,run=tree_workspace
     assert w.document_tree.topLevelItemCount()==2
     assert all(key[2]!=docs[2] for nodes in w._tree_nodes.values() for key in nodes)
+    # Group rows are lazy too: none exist under a theme until it is opened.
+    roots=[w.theme_tree.topLevelItem(i) for i in range(w.theme_tree.topLevelItemCount())]
+    unopened=[r for r in roots if not r.isExpanded() and r is not w.theme_tree.currentItem()]
+    assert unopened and all(r.childCount()==0 for r in unopened)
+    for root in roots:
+        root.setExpanded(True)
     groups=[item for key,item in w._tree_nodes[w.theme_tree].items() if key[0]=='group']
-    assert all(item.childCount()==0 for item in groups)
+    assert groups and all(item.childCount()==0 for item in groups)
     item=groups[0];item.setExpanded(True)
     assert item.childCount()==len(w._navigation_groups[(item.data(0,Qt.ItemDataRole.UserRole)['theme_id'],item.data(0,Qt.ItemDataRole.UserRole)['document_id'])])
 

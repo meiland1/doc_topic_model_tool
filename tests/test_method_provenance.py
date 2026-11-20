@@ -118,7 +118,7 @@ class MethodProvenanceTests(unittest.TestCase):
             from PySide6.QtWidgets import QApplication, QDialogButtonBox
         except ImportError:
             self.skipTest('PySide6 not installed')
-        from qualitative_themes.gui.coding_workspace import CodingWorkspace
+        from qualitative_themes.gui.read_code import CodingWorkspace
         from qualitative_themes.gui.history import AnalysisHistoryDialog
         from qualitative_themes.gui.refinement import RefinementSetupDialog
         from qualitative_themes.analysis.refinement import load_source

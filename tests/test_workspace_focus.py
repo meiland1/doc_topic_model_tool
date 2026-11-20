@@ -1,5 +1,5 @@
 """View switching and target-bound note drafts."""
-from qualitative_themes.gui.coding_workspace import CodingWorkspace
+from qualitative_themes.gui.read_code import CodingWorkspace
 from qualitative_themes.storage.database import create_project
 from qualitative_themes.storage.documents import import_document
 from qualitative_themes.storage.coding import create_theme, add_coding, list_notes

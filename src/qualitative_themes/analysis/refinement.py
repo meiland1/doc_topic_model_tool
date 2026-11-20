@@ -95,9 +95,12 @@ def load_source(directory, run_id):
             if doc not in excluded_by_doc:
                 excluded_by_doc[doc] = interviewer_ranges(text, labels)
     from qualitative_themes.analysis.speakers import without_ranges
-    passages = [Passage(str(uuid4()), doc, ordinal, start, end,
-                        clean_model_text(without_ranges(text, start, end, excluded_by_doc[doc]) if exclude else text[start:end]),
-                        digest)
+
+    def model_input(doc, text, start, end):
+        source_text = without_ranges(text, start, end, excluded_by_doc[doc]) if exclude else text[start:end]
+        return clean_model_text(source_text)
+
+    passages = [Passage(str(uuid4()), doc, ordinal, start, end, model_input(doc, text, start, end), digest)
                 for doc, ordinal, start, end, digest, text, *_ in rows]
     assignments = [groups[r[6]] for r in rows]
     keywords, representatives = {}, {}
@@ -249,12 +252,14 @@ def propose_refinement(directory, source_id, operation, settings=None, unit=None
         if any((a == -1) != (b == -1) for a, b in zip(source["output"].assignments, output.assignments)):
             raise ValueError("This refinement changed Uncategorized memberships unexpectedly.")
     if operation != "discover":
-        output.model_info['segmentation'] = source['model_info'].get('segmentation', {'method': 'legacy-word-v1'})
+        output.model_info['segmentation'] = source['model_info'].get('segmentation', {})
         from qualitative_themes.storage.provenance import combine_provenance
         new_origins = {}
         for previous, current in zip(source["output"].assignments, output.assignments):
             new_origins.setdefault(str(current), set()).add(previous)
-        output.model_info["topic_provenance"] = {key: combine_provenance([source["provenance"][previous] for previous in entries]) for key, entries in new_origins.items()}
+        output.model_info["topic_provenance"] = {
+            key: combine_provenance([source["provenance"][previous] for previous in entries])
+            for key, entries in new_origins.items()}
         # Protect the current researcher-visible label, including deliberate merges/renames.
         category_labels = {}
         for previous, current in zip(source["output"].assignments, output.assignments):
@@ -285,7 +290,9 @@ def propose_refinement(directory, source_id, operation, settings=None, unit=None
                 old_id = item["recommended"]
                 if old_id:
                     old = source["themes"][old_id]
-                    if operation == "names" or (operation in {"words", "reduce"} and not settings.name_themes) or old["protected"]:
+                    keeps_old_name = (operation == "names" or old["protected"]
+                                      or (operation in {"words", "reduce"} and not settings.name_themes))
+                    if keeps_old_name:
                         conn.execute("UPDATE themes SET generated_label=?,user_label=?,description=? WHERE id=?",
                                      (old["generated_label"], old["user_label"], old["description"], item["theme_id"]))
                     if old["protected"] and old["user_label"] is None:
