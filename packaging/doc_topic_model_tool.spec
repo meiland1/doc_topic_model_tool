@@ -14,7 +14,7 @@ VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["
 
 datas, binaries, hiddenimports = [], [], []
 for package in ["sentence_transformers", "transformers", "tokenizers", "bertopic", "umap",
-                "hdbscan", "pynndescent", "sklearn", "plotly", "fitz"]:
+                "hdbscan", "pynndescent", "sklearn", "plotly", "fitz", "openpyxl", "docx"]:
     try:
         d, b, h = collect_all(package)
     except Exception:

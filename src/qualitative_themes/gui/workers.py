@@ -5,8 +5,8 @@ from pathlib import Path
 from PySide6.QtCore import Signal
 
 from qualitative_themes.storage.documents import import_document
-from qualitative_themes.analysis.topics import AnalysisCancelled, analyze
-from qualitative_themes.analysis.labels import label_run, list_local_models, AUTO_NAMING_LIMIT
+from qualitative_themes.analysis.topics import AnalysisCancelled, analyze, prepare_passages
+from qualitative_themes.analysis.labels import label_run, list_local_models
 from qualitative_themes.analysis.settings import AnalysisSettings
 
 
@@ -100,17 +100,15 @@ class AnalysisWorker(WorkerThread):
                 if self.name_themes:
                     self.progress.emit('Analysis saved. You can read and code while optional theme naming finishes…')
                     try:
-                        attempt = label_run(self.directory, run_id, self.ollama_model,
-                                  progress=self.progress.emit, should_cancel=self.isInterruptionRequested,
-                                  max_themes=AUTO_NAMING_LIMIT)
+                        label_run(self.directory, run_id, self.ollama_model,
+                                  progress=self.progress.emit, should_cancel=self.isInterruptionRequested)
                     except AnalysisCancelled:
                         raise
                     except Exception as exc:
                         traceback.print_exc()
                         self.progress.emit(f"Analysis saved; theme naming failed: {exc}")
                     else:
-                        if not attempt or attempt.get('status') != 'skipped_large_run':
-                            self.naming_complete.emit(run_id)
+                        self.naming_complete.emit(run_id)
         except AnalysisCancelled:
             self.cancelled.emit()
         except Exception as exc:
@@ -132,3 +130,49 @@ class ImportWorker(WorkerThread):
             if self.isInterruptionRequested():
                 break
             self.result.emit(import_document(self.directory, path))
+
+
+class InspectionWorker(WorkerThread):
+    """Preview passages for the current choices without saving anything.
+
+    Runs prepare_passages() and emits result(unit, summary) with counts, the
+    passages themselves and segmentation stats. The dialog restarts it every
+    time the passage size or interviewer options change.
+    """
+    result = Signal(str, object)
+    failed = Signal(str)
+
+    def __init__(self, directory, documents, unit, parent=None, exclude_interviewer=False, labels=None, settings=None):
+        super().__init__(parent)
+        self.directory, self.documents, self.unit = directory, documents, unit
+        self.exclude_interviewer = exclude_interviewer
+        self.labels = tuple(labels or ())
+        self.analysis_settings = settings
+
+    def run(self):
+        try:
+            diagnostics = {}
+            passages = prepare_passages(self.directory, self.unit, self.documents, self.exclude_interviewer,
+                                        list(self.labels), settings=self.analysis_settings, diagnostics=diagnostics,
+                                        should_cancel=self.isInterruptionRequested)
+            if not self.isInterruptionRequested():
+                words = sum(len(p.text.split()) for p in passages)
+                self.result.emit(self.unit, {"count": len(passages), "words": words,
+                    "unique": len({p.text for p in passages}), "average": round(words / len(passages)) if passages else 0,
+                    "duplicates": len(passages) - len({p.text for p in passages}),
+                    "exclude_interviewer": self.exclude_interviewer, "labels": self.labels, "passages": passages,
+                    "segmentation": diagnostics})
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class ModelListWorker(WorkerThread):
+    """Fetch installed naming models for the dropdown off the GUI thread."""
+    result = Signal(object)
+    failed = Signal(str)
+
+    def run(self):
+        try:
+            self.result.emit(list_local_models())
+        except Exception as exc:
+            self.failed.emit(str(exc))

@@ -53,6 +53,12 @@ def build_menus(window):
     add(export_menu, strings.EXPORT_CODEBOOK, lambda: window.start_research_export("codebook"), needs_project=True)
     add(export_menu, strings.EXPORT_PASSAGES, lambda: window.start_research_export("passages"), needs_project=True)
     add(export_menu, strings.EXPORT_READING_GUIDE, window.overview.export_guide, needs_project=True)
+    add(export_menu, strings.EXPORT_EVERYTHING, lambda: window.start_research_export("everything"), needs_project=True)
+    export_menu.addSeparator()
+    # A setting, not an action: it stays ticked for the rest of the session.
+    window.technical_columns_action = export_menu.addAction(strings.EXPORT_TECHNICAL)
+    window.technical_columns_action.setCheckable(True)
+    window.technical_columns_action.setToolTip("Add IDs, character positions and file hashes to CSV and Excel exports")
     file_menu.addSeparator()
     add(file_menu, strings.CLOSE_PROJECT, window.close_project, needs_project=True)
     # Quit keeps the system shortcut only on a Mac (Cmd+Q); elsewhere Ctrl+Q codes a selection.

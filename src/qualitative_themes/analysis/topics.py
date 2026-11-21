@@ -25,7 +25,8 @@ from time import perf_counter
 from qualitative_themes.analysis.transcript_text import MODEL_TEXT_VERSION
 from qualitative_themes.analysis.segment import TOKEN_SAFE_UNITS, model_text, segment_text
 from qualitative_themes.storage.database import connect
-from qualitative_themes.analysis.settings import AnalysisSettings, effective_parameters, validate_settings, vectorizer_options, small_corpus_warning
+from qualitative_themes.analysis.settings import (AnalysisSettings, effective_parameters, small_corpus_warning,
+                                                  validate_settings, vectorizer_options)
 
 
 class AnalysisCancelled(Exception):
@@ -252,16 +253,71 @@ def list_analysis_runs(directory):
         return conn.execute("SELECT id, completed_at, settings_json FROM analysis_runs WHERE status='completed' ORDER BY completed_at DESC, rowid DESC").fetchall()
 
 
-def apply_topic_goal(model, texts, target, progress):
-    """Reduce only; the researcher's goal doesn't count "Not in any theme".
+def keyword_models(settings):
+    """BERTopic keyword pieces for the key word settings: ctfidf_model, representation_model, top_n_words.
 
-    Returns the topic count before reduction. Never increases the topic count.
+    "More varied" and "Based on meaning" embed candidate words, so the BERTopic
+    model they go into needs an embedding model.
+    """
+    from bertopic.representation import KeyBERTInspired, MaximalMarginalRelevance
+    from bertopic.vectorizers import ClassTfidfTransformer
+    representation = {"varied": lambda: MaximalMarginalRelevance(diversity=0.3, top_n_words=settings.top_n_words),
+                      "meaning": lambda: KeyBERTInspired(top_n_words=settings.top_n_words),
+                      "counts": lambda: None}[settings.keyword_style]()
+    return {"ctfidf_model": ClassTfidfTransformer(reduce_frequent_words=settings.play_down_common_words),
+            "representation_model": representation, "top_n_words": settings.top_n_words}
+
+
+def apply_topic_goal(model, texts, settings, progress):
+    """Combine themes down to "About N" and then to the "Up to N themes" cap. Never adds themes.
+
+    Neither number counts "Not in any theme". Returns the count before combining.
     """
     discovery_count = len(set(model.topics_) - {-1})
-    if target is not None and target < discovery_count:
-        progress(f"Reducing {discovery_count} discovered themes toward {target}…")
-        model.reduce_topics(texts, nr_topics=target + int(-1 in model.topics_))
+    target, cap = settings.requested_theme_count, settings.max_themes
+    goal = min(target, cap) if target else cap
+    if goal < discovery_count:
+        if target and target <= cap:
+            progress(f"Reducing {discovery_count} discovered themes toward {target}…")
+        else:
+            progress(f"Found {discovery_count} themes; combining similar ones to stay within {cap}…")
+        model.reduce_topics(texts, nr_topics=goal + int(-1 in model.topics_))
     return discovery_count
+
+
+def _models(params, embeddings):
+    """(dimensionality model, clustering model, distance cut used or None) for the recorded parameters."""
+    if "small_collection" in params:
+        import numpy as np
+        from bertopic.dimensionality import BaseDimensionalityReduction
+        from sklearn.cluster import AgglomerativeClustering
+        from qualitative_themes.analysis.settings import SMALL_COLLECTION_DISTANCE
+        grouping = {key: value for key, value in params["small_collection"].items() if key != "method"}
+        cut = None
+        if "n_clusters" not in grouping:
+            unit = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+            upper = np.triu_indices(len(unit), 1)
+            median = float(np.median(1 - (unit @ unit.T)[upper]))
+            cut = max(0.05, min(SMALL_COLLECTION_DISTANCE, median))  # 0.05: identical passages still join
+            grouping.update(n_clusters=None, distance_threshold=cut)
+        return BaseDimensionalityReduction(), AgglomerativeClustering(**grouping), cut
+    import inspect
+    from umap import UMAP
+    from hdbscan import HDBSCAN
+    umap_options = dict(params["umap"], n_jobs=1)
+    if "compatibility_layout" in inspect.signature(UMAP).parameters:
+        umap_options["compatibility_layout"] = True  # umap-learn 0.6+: keep the 0.5 layout, so seeds reproduce
+    return UMAP(**umap_options), HDBSCAN(**params["hdbscan"]), None
+
+
+def fill_leftovers(model, texts, topics, embeddings, settings, progress):
+    """Move "Not in any theme" passages into their closest theme when close enough. Returns (topics, moved)."""
+    if not settings.fill_leftovers or -1 not in topics or set(topics) == {-1}:
+        return topics, 0
+    progress("Placing leftover passages in their closest theme…")
+    filled = [int(t) for t in model.reduce_outliers(texts, topics, strategy="embeddings", embeddings=embeddings,
+                                                    threshold=settings.fill_threshold)]
+    return filled, sum(old == -1 and new != -1 for old, new in zip(topics, filled))
 
 
 def fit_bertopic(passages, settings, directory, progress, should_cancel):
@@ -279,8 +335,6 @@ def fit_bertopic(passages, settings, directory, progress, should_cancel):
     try:
         import numpy as np
         from bertopic import BERTopic
-        from umap import UMAP
-        from hdbscan import HDBSCAN
         from sklearn.feature_extraction.text import CountVectorizer, ENGLISH_STOP_WORDS
     except ImportError as exc:
         raise ValueError('Install analysis dependencies in your environment: pip install -e ".[analysis,test]"') from exc
@@ -345,22 +399,33 @@ def fit_bertopic(passages, settings, directory, progress, should_cancel):
 
     def discover(selected, selected_embeddings, selected_settings):
         check_cancel(should_cancel)
-        progress("Finding corpus-wide themes… Cancellation takes effect after clustering finishes.")
         selected_params = effective_parameters(selected_settings, len(selected))
-        options = {}
+        small = "small_collection" in selected_params
+        progress("Few passages, so using small-collection grouping…" if small else
+                 "Finding corpus-wide themes… Cancellation takes effect after clustering finishes.")
+        options = keyword_models(selected_settings)
         if selected_settings.analysis_method == "guided":
             options["seed_topic_list"] = guided_seed_topics(selected_settings)
             progress("Guiding discovery with researcher-supplied seed topics…")
-        model = BERTopic(embedding_model=encoder, top_n_words=10, calculate_probabilities=False,
-            umap_model=UMAP(**selected_params["umap"]), hdbscan_model=HDBSCAN(**selected_params["hdbscan"]),
-            vectorizer_model=CountVectorizer(**vectorizer_options(selected_settings, ENGLISH_STOP_WORDS)), **options)
+        if selected_settings.auto_merge and not selected_settings.requested_theme_count:
+            options["nr_topics"] = "auto"
+        reducer, clusterer, cut = _models(selected_params, selected_embeddings)
+        model = BERTopic(embedding_model=encoder, calculate_probabilities=False, umap_model=reducer,
+                         hdbscan_model=clusterer,
+                         vectorizer_model=CountVectorizer(**vectorizer_options(selected_settings, ENGLISH_STOP_WORDS)),
+                         **options)
+        texts = [p.text for p in selected]
         try:
-            model.fit_transform([p.text for p in selected], embeddings=selected_embeddings.copy())
+            model.fit_transform(texts, embeddings=selected_embeddings.copy())
         except ValueError as exc:
-            raise ValueError("The corpus could not form themes. Try more varied text, more documents, or Paragraphs. " + str(exc)) from exc
+            raise ValueError("These passages could not form themes. Try more varied text, more documents, "
+                             "or another way of splitting documents. " + str(exc)) from exc
         check_cancel(should_cancel)
-        count = apply_topic_goal(model, [p.text for p in selected], selected_settings.requested_theme_count, progress)
+        count = apply_topic_goal(model, texts, selected_settings, progress)
         topics = [int(t) for t in model.topics_]
+        filled = 0
+        if selected_settings.analysis_method != "zero_shot":
+            topics, filled = fill_leftovers(model, texts, topics, selected_embeddings, selected_settings, progress)
         words = {topic: [(str(word), float(score)) for word, score in (model.get_topic(topic) or [])] for topic in set(topics)}
         reps = {}
         for topic in set(topics):
@@ -368,7 +433,8 @@ def fit_bertopic(passages, settings, directory, progress, should_cancel):
             reps[topic] = [p.id for p, t in zip(selected, topics) if t == topic and p.text in examples][:3]
         scores = model.probabilities_
         return TopicOutput(topics, words, reps, [float(s) for s in scores] if scores is not None else [],
-                           {"discovery_theme_count": count})
+                           {"discovery_theme_count": count, "small_collection": small, "filled_leftovers": filled,
+                            **({"small_collection_distance": round(cut, 3)} if cut is not None else {})})
 
     check_cancel(should_cancel)
     if settings.analysis_method == "zero_shot":
@@ -382,7 +448,8 @@ def fit_bertopic(passages, settings, directory, progress, should_cancel):
             progress(f"Too few unmatched passages to look for more themes; they stay in \"{UNGROUPED_LABEL}\".")
         # Reuse the existing BERTopic fixed-partition path for c-TF-IDF keywords.
         from qualitative_themes.analysis.refinement import fixed_partition_backend
-        represented = fixed_partition_backend(passages, topics, settings, "words", progress, should_cancel)
+        represented = fixed_partition_backend(passages, topics, settings, "words", progress, should_cancel,
+                                              encoder=encoder)
         keywords, representatives = restore_partition_keywords(passages, topics, represented)
         output = TopicOutput(topics, keywords, representatives, model_info=method_info)
     else:

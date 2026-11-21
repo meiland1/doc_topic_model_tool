@@ -138,7 +138,15 @@ class AnalysisBarMixin:
         details.setReadOnly(True)
         summary = self.method_status.toolTip() or self.method_status.text()
         naming = self.naming_status.toPlainText()
-        details.setPlainText(summary + ("\n\n" + naming if naming else ""))
+        used = ""
+        if self.directory and self.run_id:
+            from qualitative_themes.analysis.settings import settings_report
+            with connect(self.directory) as conn:
+                row = conn.execute("SELECT settings_json, model_info_json FROM analysis_runs WHERE id=?",
+                                   (self.run_id,)).fetchone()
+            if row:
+                used = "\n\n" + settings_report(json.loads(row[0]), json.loads(row[1] or "{}"))
+        details.setPlainText(summary + used + ("\n\n" + naming if naming else ""))
         layout.addWidget(details)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(dialog.reject)

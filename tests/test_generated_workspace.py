@@ -82,7 +82,7 @@ def test_setup_inspects_corpus_and_validates_presets(generated_workspace):
         assert analyze_button.isEnabled()
         dialog.set_style("Broad")
         assert analyze_button.isEnabled()
-        assert "Small corpus" in dialog.validation.text()
+        assert "small-collection grouping" in dialog.validation.text()
         dialog.set_style("Detailed")
         assert dialog.minimum.value() == 3
         assert analyze_button.isEnabled()
@@ -192,10 +192,10 @@ def test_main_window_refinement_cancel_keeps_selected_run(generated_workspace, m
     from qualitative_themes.analysis.refinement import propose_refinement, list_proposals
     from qualitative_themes.gui.refinement import RefinementReviewDialog
     from PySide6.QtWidgets import QDialog
+    from test_labels import MockClient
     app, workspace, docs, directory, run = generated_workspace
-    def offline():
-        raise ValueError("No local service")
-    proposal, _ = propose_refinement(directory, run, "names", client_factory=offline)
+    proposal, _ = propose_refinement(directory, run, "names", AnalysisSettings(ollama_model="local:small"),
+                                     client_factory=lambda: MockClient())
     window = MainWindow()
     try:
         window._show_project(open_project(directory))
@@ -208,6 +208,28 @@ def test_main_window_refinement_cancel_keeps_selected_run(generated_workspace, m
         window.refinement_ready(proposal)
         assert window.workspace.run_id == run
         assert not list_proposals(directory)
+    finally:
+        window.close()
+
+
+def test_names_that_all_fail_are_reported_not_reviewed(generated_workspace, monkeypatch):
+    from qualitative_themes.analysis.refinement import propose_refinement, list_proposals
+    from qualitative_themes.gui.refinement import RefinementReviewDialog
+    from PySide6.QtWidgets import QMessageBox
+    app, workspace, docs, directory, run = generated_workspace
+    def offline():
+        raise ValueError("No local service")
+    proposal, _ = propose_refinement(directory, run, "names", client_factory=offline)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))
+    monkeypatch.setattr(RefinementReviewDialog, "exec", lambda dialog: pytest.fail("nothing to review"))
+    window = MainWindow()
+    try:
+        window._show_project(open_project(directory))
+        window.refinement_ready(proposal)
+        assert warnings and warnings[0].startswith("Theme naming didn't work")
+        assert "No local service" in warnings[0]
+        assert window.workspace.run_id == run and not list_proposals(directory)
     finally:
         window.close()
 
@@ -291,7 +313,7 @@ def test_five_passage_docx_enables_analyze_with_small_corpus_warning(tmp_path):
         assert dialog.minimum.value() == 2
         assert dialog.auto_names.isChecked()
         assert dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
-        assert "Small corpus" in dialog.validation.text()
+        assert "small-collection grouping" in dialog.validation.text()
     finally:
         dialog.reject()
         dialog.deleteLater()
@@ -340,7 +362,10 @@ def test_coded_passage_export_worker_preserves_selected_run(generated_workspace,
     with destination.open(encoding='utf-8-sig', newline='') as stream:
         rows = list(csv.DictReader(stream))
     assert len(rows) == 12
-    assert all(row['analysis_id'] == run for row in rows)
+    assert list(rows[0]) == ['Document', 'Page', 'Theme', 'Passage', 'Coded by', 'Comments']
+    assert {row['Coded by'] for row in rows} == {'Suggested'}
+    about = (tmp_path / 'passages - About this export.txt').read_text(encoding='utf-8')
+    assert window.workspace.run_choice.currentText().split(' (')[0] in about
     window.close()
 
 

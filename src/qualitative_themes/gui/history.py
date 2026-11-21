@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QLabel,
     QTabWidget, QVBoxLayout, QWidget)
 
 from qualitative_themes.analysis.topics import AnalysisCancelled
-from qualitative_themes.export.research import write_codebook, write_coded_passages
+from qualitative_themes.export.research import write_codebook, write_coded_passages, write_everything
 from qualitative_themes.storage.history import analysis_details, history_events, history_runs
 
 
@@ -20,17 +20,18 @@ class ResearchExportWorker(WorkerThread):
     failed = Signal(str)
     cancelled = Signal()
 
-    def __init__(self, directory, selected_run, kind, destination, parent=None):
+    def __init__(self, directory, selected_run, kind, destination, parent=None, technical=False):
         super().__init__(parent)
         self.directory, self.selected_run = directory, selected_run
-        self.kind, self.destination = kind, destination
+        self.kind, self.destination, self.technical = kind, destination, technical
         self.run_id = None
 
     def run(self):
         try:
-            writer = write_codebook if self.kind == "codebook" else write_coded_passages
+            writer = {"codebook": write_codebook, "passages": write_coded_passages,
+                      "everything": write_everything}[self.kind]
             count, _ = writer(self.directory, self.selected_run, self.destination,
-                              self.progress.emit, self.isInterruptionRequested)
+                              self.progress.emit, self.isInterruptionRequested, technical=self.technical)
             self.result.emit(str(self.destination), count)
         except AnalysisCancelled:
             self.cancelled.emit()

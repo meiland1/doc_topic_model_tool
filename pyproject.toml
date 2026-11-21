@@ -7,7 +7,7 @@ name = "doc-topic-model-tool"
 version = "0.2.1"
 description = "Offline qualitative document coding and theme discovery"
 requires-python = ">=3.12,<3.14"
-dependencies = ["PySide6>=6.8,<7", "pymupdf>=1.24,<2", "python-docx>=1.1,<2"]
+dependencies = ["PySide6>=6.8,<7", "pymupdf>=1.24,<2", "python-docx>=1.1,<2", "openpyxl>=3.1,<4"]
 
 [project.optional-dependencies]
 analysis = ["bertopic>=0.17,<1", "sentence-transformers>=3,<6", "umap-learn>=0.5,<1", "hdbscan>=0.8,<1", "scikit-learn>=1.5,<2", "httpx>=0.27,<1"]

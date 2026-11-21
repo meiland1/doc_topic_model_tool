@@ -22,6 +22,22 @@ STYLE_HELP = {
 DEFAULT_NAMING_MODEL = "llama3.1:8b"
 
 
+# Key word styles: stored value -> what the researcher sees. "varied" uses
+# MaximalMarginalRelevance, "meaning" KeyBERTInspired, "counts" plain c-TF-IDF.
+KEYWORD_STYLES = {"counts": "Plain counts", "varied": "More varied (recommended)", "meaning": "Based on meaning"}
+
+# How many passages HDBSCAN leaves unsorted, as min_samples relative to the theme size.
+UNSORTED_LEVELS = ("Fewer", "Balanced", "More")
+
+# At or below this many passages (or with a minimum of 1 passage per theme) themes are
+# found by small-collection grouping instead of UMAP + HDBSCAN. Tuned on the sample interviews.
+SMALL_COLLECTION = 30
+# Small-collection grouping stops joining groups at the median distance between
+# passages, but never above this (cosine distance, average linkage). On the sample
+# interviews 0.55 separates the garden, transport, booking and letter answers;
+# the median lets a few similar whole documents still split.
+SMALL_COLLECTION_DISTANCE = 0.55
+
 ANALYSIS_METHODS = {
     "general": "Let the tool find themes",
     "guided": "Find themes, nudged by my keywords",
@@ -76,6 +92,33 @@ class AnalysisSettings:
     exclude_interviewer: bool = False
     # Normalized speaker labels treated as the interviewer (empty = the known defaults).
     interviewer_labels: tuple = ()
+    # More options (added in 0.3). Older runs load with these defaults.
+    fill_leftovers: bool = False
+    fill_threshold: float = 0.5
+    keyword_style: str = "varied"
+    play_down_common_words: bool = True
+    top_n_words: int = 10
+    auto_merge: bool = False
+    max_themes: int = 100
+
+
+def min_samples_for(style, level):
+    """HDBSCAN min_samples for a theme size and an 'unsorted' level (Fewer/Balanced/More)."""
+    preset = PRESETS[style]
+    return {"Fewer": 1, "Balanced": preset["min_samples"], "More": preset["min_samples"] + preset["min_topic_size"]}[level]
+
+
+def unsorted_level(settings):
+    """The Fewer/Balanced/More choice that gives settings.min_samples (Balanced if none does)."""
+    for level in UNSORTED_LEVELS:
+        if min_samples_for(settings.analysis_style, level) == settings.min_samples:
+            return level
+    return "Balanced"
+
+
+def small_collection(settings, count):
+    """True when themes are found by small-collection grouping (agglomerative, no UMAP)."""
+    return settings.analysis_method != "zero_shot" and (count <= SMALL_COLLECTION or settings.min_topic_size == 1)
 
 
 def preset_settings(style, **overrides):
@@ -143,34 +186,59 @@ def validate_settings(settings, count):
         raise ValueError('Choose whether to allow truncation of oversized passages.')
     validate_method_settings(settings)
     if any(type(getattr(settings, name)) is not int for name in
-           ("min_topic_size", "batch_size", "min_samples", "n_neighbors", "seed")):
+           ("min_topic_size", "batch_size", "min_samples", "n_neighbors", "seed", "top_n_words", "max_themes")):
         raise ValueError("Analysis counts and seed must be whole numbers.")
     if settings.analysis_style not in PRESETS:
         raise ValueError("Choose a supported analysis style.")
-    if settings.min_topic_size < 2 or settings.batch_size < 1 or settings.min_samples < 1 or settings.n_neighbors < 2:
-        raise ValueError("A theme needs at least 2 passages; the other counts must be above zero.")
+    if settings.min_topic_size < 1 or settings.batch_size < 1 or settings.min_samples < 1 or settings.n_neighbors < 2:
+        raise ValueError("A theme needs at least 1 passage; the other counts must be above zero.")
+    if settings.keyword_style not in KEYWORD_STYLES or not 5 <= settings.top_n_words <= 20:
+        raise ValueError("Choose a key word style, and 5 to 20 key words per theme.")
+    if not 1 <= settings.max_themes <= 1000:
+        raise ValueError("Allow between 1 and 1,000 themes.")
+    if any(type(getattr(settings, name)) is not bool for name in ("fill_leftovers", "play_down_common_words", "auto_merge")):
+        raise ValueError("Choose on or off for each option.")
+    if isinstance(settings.fill_threshold, bool) or not 0 <= settings.fill_threshold <= 1:
+        raise ValueError("The closeness for leftover passages must be between 0 and 1.")
     if settings.cluster_selection_method not in {"eom", "leaf"} or settings.ngram_range not in {(1, 1), (1, 2)}:
         raise ValueError("Choose supported clustering and keyword settings.")
     if not settings.embedding_model.strip() or not settings.embedding_revision.strip():
         raise ValueError("The internal embedding model and revision must be set.")
     if len(settings.ignored_words) > 500 or any(not isinstance(word, str) or not re.fullmatch(r"\w{2,}", word) for word in settings.ignored_words):
         raise ValueError("Ignored words must be single words of at least two characters (up to 500).")
-    minimum = 1 if settings.analysis_method == "zero_shot" else max(3, settings.min_topic_size)
+    if settings.analysis_method == "zero_shot":
+        minimum = 1
+    elif small_collection(settings, count):
+        minimum = 2
+    else:
+        minimum = settings.min_topic_size
     if count < minimum:
-        raise ValueError(f"Only {count} passages are available; these settings need at least {minimum}. "
-                         "Lower minimum evidence, choose Paragraphs, or add documents. "
-                         "Discovery needs at least 3 passages.")
+        raise ValueError(f"Only {count} passage{'s are' if count != 1 else ' is'} available; these settings need "
+                         f"at least {minimum}. Lower \"A theme needs at least\", split documents differently, "
+                         "or add documents.")
     target = settings.requested_theme_count
     if target is not None and (type(target) is not int or not 1 <= target <= count):
         raise ValueError(f"Aim for a positive number no larger than the {count} available passages.")
 
 
 def small_corpus_warning(settings, count):
-    """A warning string for small corpora, or '' when the corpus is big enough."""
+    """A note for small collections, or '' when the collection is big enough."""
+    if small_collection(settings, count):
+        why = "A theme can be a single passage" if settings.min_topic_size == 1 else "Few passages"
+        return (f"{why}, so using small-collection grouping. Every passage gets a theme; "
+                "treat the themes as a first sort.")
     if count < max(10, settings.min_topic_size * 2):
-        return (f"Small corpus: {count} passages. Analysis can run, but may find few themes "
-                "or leave many passages in \"Not in any theme\". Treat names and groups as preliminary.")
+        return (f"Small collection: {count} passages. Expect few themes and many passages in "
+                "\"Not in any theme\". Treat names and groups as preliminary.")
     return ""
+
+
+def keyword_parameters(settings):
+    """How key words are picked, as recorded with a run."""
+    return {"style": settings.keyword_style, "top_n_words": settings.top_n_words,
+            "reduce_frequent_words": settings.play_down_common_words,
+            "representation": {"varied": "MaximalMarginalRelevance(diversity=0.3)", "meaning": "KeyBERTInspired",
+                               "counts": None}[settings.keyword_style]}
 
 
 def vectorizer_options(settings, english_words):
@@ -183,20 +251,77 @@ def effective_parameters(settings, count):
 
     Saved with each run so the exact configuration can be reported later.
     """
+    vectorizer = {"stop_words": "english", "additional_stop_words": list(settings.ignored_words),
+                  "ngram_range": list(settings.ngram_range), "min_df": 1}
     if settings.analysis_method == "zero_shot":
         return {"matching": {"metric": "cosine", "minimum_similarity": settings.zeroshot_min_similarity,
                              "assignment": "single best matching description"},
                 "residual_discovery": {"minimum_passages": max(3, settings.min_topic_size),
                                        "parameters": "Computed for the unmatched subset; below the minimum they stay ungrouped."},
-                "vectorizer": {"stop_words": "english", "additional_stop_words": list(settings.ignored_words),
-                               "ngram_range": list(settings.ngram_range), "min_df": 1},
-                "reduction": {"aim_for_themes": None, "disabled": True}}
+                "vectorizer": vectorizer, "keywords": keyword_parameters(settings),
+                "reduction": {"aim_for_themes": None, "disabled": True, "max_themes": settings.max_themes}}
+    common = {"vectorizer": vectorizer, "keywords": keyword_parameters(settings),
+              "bertopic": {"top_n_words": settings.top_n_words, "calculate_probabilities": False},
+              "reduction": {"aim_for_themes": settings.requested_theme_count, "includes_uncategorized": False,
+                            "auto_merge": settings.auto_merge, "max_themes": settings.max_themes},
+              "leftovers": {"fill": settings.fill_leftovers, "strategy": "embeddings",
+                            "threshold": settings.fill_threshold}}
+    if small_collection(settings, count):
+        grouping = {"method": "AgglomerativeClustering", "metric": "cosine", "linkage": "average"}
+        if settings.requested_theme_count:
+            grouping["n_clusters"] = min(settings.requested_theme_count, count)
+        else:
+            grouping["distance_threshold"] = f"median distance between passages, at most {SMALL_COLLECTION_DISTANCE}"
+        return {"small_collection": grouping, **common}
     return {"umap": {"n_neighbors": min(settings.n_neighbors, count-1), "n_components": min(5, count-2),
                      "min_dist": 0.0, "metric": "cosine", "init": "random", "random_state": settings.seed},
             "hdbscan": {"min_cluster_size": settings.min_topic_size, "min_samples": min(settings.min_samples, count-1),
                         "metric": "euclidean", "cluster_selection_method": settings.cluster_selection_method,
-                        "prediction_data": True},
-            "vectorizer": {"stop_words": "english", "additional_stop_words": list(settings.ignored_words),
-                           "ngram_range": list(settings.ngram_range), "min_df": 1},
-            "bertopic": {"top_n_words": 10, "calculate_probabilities": False},
-            "reduction": {"aim_for_themes": settings.requested_theme_count, "includes_uncategorized": False}}
+                        "prediction_data": True}, **common}
+
+
+def settings_report(values: dict, info: dict) -> str:
+    """Every setting of a run with the value used, in plain words (About this analysis).
+
+    `values` is the run's saved settings JSON, `info` its model_info. Settings
+    a run predates show as "not recorded" rather than today's default.
+    """
+    def has(key):
+        return key in values
+
+    def on(key):
+        return ("On" if values[key] else "Off") if has(key) else "not recorded"
+    from qualitative_themes.analysis.segment import UNIT_LABELS
+    style = values.get("analysis_style", "Balanced")
+    target = values.get("requested_theme_count")
+    lines = [
+        ("How themes were found", ANALYSIS_METHODS.get(values.get("analysis_method", "general"), "not recorded")),
+        ("How documents were split", UNIT_LABELS.get(values.get("analysis_unit"), "not recorded")),
+        ("Theme size", style),
+        ("A theme needs at least", f"{values.get('min_topic_size', '?')} passages"
+         + (" (not used: small-collection grouping gives every passage a theme)"
+            if info.get("small_collection") and values.get("min_topic_size") != 1 else "")),
+        ("How many passages stay unsorted",
+         f"{unsorted_level(settings_from_dict(values))} (min_samples {values.get('min_samples', '?')})"
+         if style in PRESETS else "not recorded"),
+        ("Place leftover passages in their closest theme",
+         on("fill_leftovers") + (f" ({info['filled_leftovers']} passages placed)" if info.get("filled_leftovers") else "")),
+        ("Merge very similar themes automatically", on("auto_merge")),
+        ("Number of themes", f"About {target}" if target else "Let the tool decide"),
+        ("At most", f"{values['max_themes']} themes" if has("max_themes") else "not recorded"),
+        ("Keyword style", KEYWORD_STYLES.get(values.get("keyword_style"), "not recorded (plain counts)")),
+        ("Play down words found in every theme", on("play_down_common_words")),
+        ("Keywords per theme", str(values.get("top_n_words", "10"))),
+        ("Words to ignore", ", ".join(values.get("ignored_words") or []) or "none"),
+        ("Two-word keywords", "On" if tuple(values.get("ngram_range", (1, 2))) == (1, 2) else "Off"),
+        ("Ignore the interviewer's questions", "On" if values.get("exclude_interviewer") else "Off"),
+        ("Random seed", str(values.get("seed", "not recorded"))),
+        ("Grouping", ("Small-collection grouping" + (f" (cut at distance {info['small_collection_distance']})"
+                                                       if "small_collection_distance" in info else ""))
+         if info.get("small_collection") else "UMAP and HDBSCAN"),
+    ]
+    found, kept = info.get("discovery_theme_count"), info.get("actual_theme_count")
+    if found is not None and kept is not None and found != kept:
+        lines.append(("Themes found, then kept", f"{found}, then {kept}"))
+    width = max(len(name) for name, _ in lines)
+    return "Settings used\n" + "\n".join(f"  {name + ':':<{width + 1}} {value}" for name, value in lines)

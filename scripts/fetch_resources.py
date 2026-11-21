@@ -77,10 +77,25 @@ def fetch_embedding_model():
 
 
 def download(url: str) -> bytes:
-    """Fetch a URL into memory and print its size and SHA-256 (worth recording when bumping the pin)."""
+    """Fetch a URL into memory, showing progress, then print its size and SHA-256.
+
+    The SHA-256 is worth recording when bumping the pin. Progress goes on one
+    line (carriage return), every 1% or so, so a 2 GB download doesn't look stuck.
+    """
     print(f"Downloading {url} …")
+    chunks, received, shown = [], 0, -1
     with urllib.request.urlopen(url) as response:
-        data = response.read()
+        total = int(response.headers.get("Content-Length") or 0)
+        while chunk := response.read(1 << 20):
+            chunks.append(chunk)
+            received += len(chunk)
+            step = int(received * 100 / total) if total else received // (50 << 20)
+            if step != shown:
+                shown = step
+                done = f"{received / 1e6:,.0f} of {total / 1e6:,.0f} MB ({step}%)" if total else f"{received / 1e6:,.0f} MB"
+                print(f"\r  {done}", end="", flush=True)
+    print()
+    data = b"".join(chunks)
     print(f"  {len(data) / 1e6:.1f} MB · sha256 {hashlib.sha256(data).hexdigest()}")
     return data
 

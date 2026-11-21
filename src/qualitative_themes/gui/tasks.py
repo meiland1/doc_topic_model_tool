@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog, QMessageB
 
 from qualitative_themes.storage.documents import (get_document, list_documents)
 from qualitative_themes.storage.history import segment_count
-from qualitative_themes.analysis.labels import labeling_report, AUTO_NAMING_LIMIT
+from qualitative_themes.analysis.labels import labeling_report, naming_message, naming_outcome
 from qualitative_themes.gui.analysis_setup import AnalysisSetupDialog
 from qualitative_themes.analysis.refinement import load_source, list_proposals, cancel_proposal
 from qualitative_themes.gui.visualizations import VisualizationWorker
@@ -30,14 +30,6 @@ from qualitative_themes.gui.workers import AnalysisWorker
 class TasksMixin:
     def name_selected_run(self):
         if self.workspace.run_id:
-            count, _ = result_summary(self.project.directory, self.workspace.run_id)
-            if count > AUTO_NAMING_LIMIT and QMessageBox.question(
-                    self, 'Many themes to name',
-                    f'This analysis has {count} themes. Naming them may take a long time. '
-                    'You can keep keyword names, or combine similar themes first. Name all of them?',
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
-                return
             self.start_refinement(operation="names")
 
     def refresh_visualization_runs(self, _index=None):
@@ -84,30 +76,34 @@ class TasksMixin:
     def start_research_export(self, kind):
         if not self.project or self.busy:
             return
-        filters = "Codebook CSV (*.csv);;Codebook JSON (*.json)" if kind == "codebook" else "Coded passages CSV (*.csv)"
-        title = "Export codebook" if kind == "codebook" else "Export coded passages"
+        filters, title, default = {
+            "codebook": ("Codebook CSV (*.csv);;Codebook JSON (*.json)", "Export codebook", "codebook.csv"),
+            "passages": ("Coded passages CSV (*.csv)", "Export coded passages", "coded passages.csv"),
+            "everything": ("Excel workbook (*.xlsx)", "Export everything", "themes and passages.xlsx")}[kind]
         if not self.workspace.directory:
             self.workspace.set_project(self.project.directory)
-        path, selected_filter = QFileDialog.getSaveFileName(self, title, f"{kind}.csv", filters)
+        path, selected_filter = QFileDialog.getSaveFileName(self, title, default, filters)
         if not path:
             return
-        suffix = ".json" if "JSON" in selected_filter else ".csv"
+        suffix = ".json" if "JSON" in selected_filter else ".xlsx" if kind == "everything" else ".csv"
+        allowed = {"codebook": {".csv", ".json"}, "passages": {".csv"}, "everything": {".xlsx"}}[kind]
         destination = Path(path)
-        if destination.suffix.lower() not in ({".csv", ".json"} if kind == "codebook" else {".csv"}):
+        if destination.suffix.lower() not in allowed:
             destination = destination.with_suffix(suffix)
             if destination.exists() and QMessageBox.question(
                     self, "Replace export?", f"Replace the existing file {destination.name}?",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
                 return
-        self._analysis_worker = ResearchExportWorker(self.project.directory, self.workspace.run_id,
-                                                     kind, destination, self)
+        self._analysis_worker = ResearchExportWorker(self.project.directory, self.workspace.run_id, kind, destination,
+                                                     self, technical=self.technical_columns_action.isChecked())
         worker = self._analysis_worker
         worker.progress.connect(self.task_status)
         worker.failed.connect(lambda message: self.task_status("Export failed: " + message))
         worker.cancelled.connect(lambda: self.task_status("Export cancelled. Existing export files and research are unchanged."))
         worker.result.connect(lambda filename, count: self.task_status(
-            f"Exported {count} {'themes' if kind == 'codebook' else 'unique passage ranges'} to {filename}"))
+            f"Exported {count} {'passages' if kind == 'passages' else 'themes'} to {filename}"
+            + ("" if filename.endswith(".json") else " (with an About this export file)" if kind != "everything" else "")))
         worker.finished.connect(self.analysis_finished)
         for button in [self.import_button, self.analyze_button]:
             button.setEnabled(False)
@@ -174,6 +170,15 @@ class TasksMixin:
             cancel_proposal(self.project.directory, proposal_id)
             return
         self.tabs.setCurrentWidget(self.workspace)
+        named, tried, error = naming_outcome(self.project.directory, proposal_id)
+        if tried and not named:
+            # Nothing would change, so there's nothing to review.
+            message = naming_message(self.project.directory, proposal_id)
+            cancel_proposal(self.project.directory, proposal_id)
+            self.task_status(message)
+            QMessageBox.warning(self, "Theme naming didn't work", message)
+            self.update_naming_controls()
+            return
         try:
             dialog = RefinementReviewDialog(self.project.directory, proposal_id, self)
             dialog.exec()
@@ -307,7 +312,7 @@ class TasksMixin:
         self.workspace.refresh_theme_labels()
         self.workspace.naming_status.setPlainText(labeling_report(self.project.directory, run_id))
         self.overview.set_run(self.project.directory, run_id)
-        self.task_status('Theme naming finished. Your reading position and researcher edits are preserved.')
+        self.task_status(naming_message(self.project.directory, run_id))
 
     def analysis_finished(self):
         """Clean up after any worker in the _analysis_worker slot (success, failure or cancel)."""

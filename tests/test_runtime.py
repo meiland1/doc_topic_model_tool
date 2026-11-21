@@ -46,6 +46,8 @@ def test_paths_use_overrides_and_detect_bundled_files(resources):
 
 
 class FakeProcess:
+    pid = 4242
+
     def __init__(self):
         self.terminated = False
 
@@ -75,8 +77,10 @@ def test_engine_starts_private_loopback_copy_and_stops(resources, tmp_path):
 
     binary = tmp_path / "ollama"
     binary.write_text("")
+    killed = []
     engine = engine_module.LocalEngine(binary=binary, models_dir=tmp_path / "store", port=11999,
-                                       popen=popen, responds=responds)
+                                       popen=popen, responds=responds, processes=lambda binary: [],
+                                       kill=killed.append)
     status = engine.start(timeout=5)
     assert status.state == "running" and status.base_url == "http://127.0.0.1:11999"
     assert launched["args"][1] == "serve"
@@ -84,7 +88,37 @@ def test_engine_starts_private_loopback_copy_and_stops(resources, tmp_path):
     assert launched["env"]["OLLAMA_MODELS"] == str(tmp_path / "store")
     assert "HTTPS_PROXY" not in launched["env"]
     engine.stop()
-    assert process.terminated and engine.status.state == "stopped"
+    assert killed == [4242] and engine.status.state == "stopped"  # the whole tree, runners included
+
+
+def test_leftover_engine_processes_are_cleared(tmp_path):
+    P = engine_module.EngineProcess
+    binary = tmp_path / "ollama"
+    binary.write_text("")
+    # An earlier session's server (100) with its runner (101), and two runners whose server is gone.
+    found = [P(100, 1, f"{binary} serve"), P(101, 100, f"{binary} runner --model a"),
+             P(200, 999, f"{binary} runner --model b"), P(300, 998, f"{binary} runner --model c")]
+    killed = []
+
+    def engine(responds):
+        return engine_module.LocalEngine(binary=binary, models_dir=tmp_path / "store", port=11997,
+                                         popen=lambda *a, **k: FakeProcess(), responds=responds,
+                                         processes=lambda b: found, kill=killed.append)
+    # Earlier server still answering: reuse it, end only the stranded runners.
+    reused = engine(lambda url, timeout=2.0: url.endswith(":11997")).start(timeout=1)
+    assert reused.state == "running" and killed == [200, 300]
+    # Nothing answering: end everything from our folder, then start fresh.
+    killed.clear()
+    calls = {"n": 0}
+    def later(url, timeout=2.0):
+        calls["n"] += 1
+        return url.endswith(":11997") and calls["n"] > 1
+    assert engine(later).start(timeout=2).state == "running"
+    assert killed == [100, 200, 300]  # 101 goes with its server's tree
+
+
+def test_engine_process_listing_never_raises(tmp_path):
+    assert engine_module.engine_processes(tmp_path / "no-such-ollama") == []
 
 
 def test_engine_falls_back_to_system_ollama_or_reports_missing(resources):

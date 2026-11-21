@@ -15,14 +15,16 @@ src/qualitative_themes/
   importers/      PDF / DOCX / TXT -> text + page/paragraph spans
   storage/        everything that reads or writes project.sqlite
   analysis/       passages, embeddings, BERTopic, naming, refinement, overview data
-  export/         codebook / coded passages / reading guide
+  export/         codebook / coded passages / reading guide / Excel (tables.py makes the plain rows)
   runtime/        installed-app concerns: resource paths, Ollama engine, model packs, health
   gui/            Qt widgets, dialogs and worker threads
     main_window.py      the window and its tabs; its methods are split into
                         project_session.py, documents_page.py, local_setup.py and tasks.py
     workers.py          the worker threads the main window starts
-    read_code/          the Read & code tab, one file per area (analysis bar, trees, reader, coding, comments)
-    settings_form.py    keyword and naming controls shared by the Find themes and Adjust themes dialogs
+    read_code/          the Read & code tab, one file per area (analysis bar, trees, reader, coding, comments;
+                        comment_card.py is one thread in the comments column)
+    settings_form.py    More options shared by Find themes and Adjust themes: keywords, naming,
+                        and (DiscoveryOptions) the settings that change how themes are found
     menus.py            the File and Edit menus
     strings.py          names that appear in more than one place (tabs, menu items, "Not in any theme")
     restore_dialog.py   one dialog for restoring from a daily safety copy or a backup file
@@ -55,7 +57,7 @@ gui  ->  analysis, export, runtime  ->  storage  ->  domain
 
 **Analysis runs are snapshots.** A run stores its settings, segments and per-segment model suggestions. Running a new analysis never changes an older one. What the workspace shows for a theme comes from `storage.coding.effective_assignments()`: the researcher's active codings, plus that run's suggestions unless the researcher rejected or removed the same exact range for that theme. Rejections are stored per theme, so they keep applying wherever that theme identity is reused (for example after a refinement).
 
-**Save everything in one transaction, at the end.** Long operations do their work in memory and write in a single `connect()` block at the end (`topics.save_result`, `labels.label_run`, `refinement.apply_proposal`). Cancelling or failing before that point leaves the project exactly as it was.
+**Save everything in one transaction, at the end.** Long operations do their work in memory and write in a single `connect()` block at the end (`topics.save_result`, `labels.label_run`, `proposals.apply_proposal`). Cancelling or failing before that point leaves the project exactly as it was.
 
 **Offline by construction.** `runtime.offline.enable_offline_mode()` runs at import time in `app.py`, before any ML library loads. Model loading always passes `local_files_only=True`. The engine binds to 127.0.0.1 with proxies stripped from its environment.
 
@@ -98,7 +100,8 @@ MainWindow.start_analysis()
     analysis.topics.analyze()
       prepare_passages()         segment each document, build cleaned model text
       validate_settings()
-      fit_bertopic()             encoder -> cached embeddings -> UMAP/HDBSCAN -> keywords
+      fit_bertopic()             encoder -> cached embeddings -> UMAP/HDBSCAN (or small-collection
+                                 grouping) -> theme cap -> leftovers -> keywords
                                  (zero-shot: match predefined topics, discover the rest)
       save_result()              run + segments + themes + suggestions, one transaction
     result(run_id) -> MainWindow.analysis_ready() -> Overview + Workspace reload
@@ -106,6 +109,8 @@ MainWindow.start_analysis()
 ```
 
 Embeddings are cached per model identity under `<project>/models/embeddings/`, so re-running with different clustering settings skips the slow part.
+
+With about 30 passages or fewer (`SMALL_COLLECTION`), or when a theme may be a single passage, UMAP and HDBSCAN are skipped: `AgglomerativeClustering` (cosine, average linkage) groups the passages directly and every passage gets a theme. It stops joining groups at the median distance between passages, never above 0.55; on the sample interviews that keeps the garden, transport, booking and letter answers apart, and lets three similar whole documents still split. After discovery, "About N" and then the "Up to N themes" cap (default 100) combine themes with `reduce_topics`, so naming never has to skip a run. Keyword style, "play down common words" and keywords per theme come from `keyword_models()`; Adjust themes → Update keywords uses the same function.
 
 Theme naming runs after the analysis is already saved, so naming failing or being cancelled never loses the analysis. Naming only overwrites `generated_label` on model-created themes. Anything the researcher renamed or merged into is left alone, and that check happens again inside the final write.
 
@@ -124,11 +129,11 @@ apply_proposal()       researcher maps proposed themes to old identities -> 'com
 cancel_proposal()      'cancelled', proposed themes 'discarded'
 ```
 
-A fingerprint of the source run and all research decisions is stored with the proposal. If anything changed before Apply, it refuses and asks for a new proposal.
+The first is in `analysis/refinement.py`, the other three in `analysis/proposals.py` (refinement.py re-exports them). A fingerprint of the source run and all research decisions is stored with the proposal. If anything changed before Apply, it refuses and asks for a new proposal.
 
 ### Exports, backups, recovery
 
-- `export/research.py` reads everything in one transaction (`build_export`), then writes to a temp file and swaps it in.
+- `export/research.py` reads everything in one transaction (`build_export`), then writes to a temp file and swaps it in. The JSON codebook is the full record; the CSVs and the Excel file go through `export/tables.py` (one row per theme, or one row per passage per theme, with technical columns only when asked) and get an "About this export" text beside them (in the Excel file it's the About sheet).
 - `storage/backup.py` zips the project with a manifest of SHA-256 hashes and verifies it before publishing. Restore only ever goes into a new folder.
 - `storage/recovery.py` plus `gui/recovery.py` take one verified snapshot a day when the user is idle, beside the project in `.tmt-recovery-<key>/`, and keep the last seven.
 

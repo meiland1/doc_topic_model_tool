@@ -170,8 +170,9 @@ class AnalysisRepositoryTests(unittest.TestCase):
         self.assertNotIn(theme, [t[0] for t in list_themes(self.directory, run)])
 
     def test_small_corpus_help_and_selection_validation(self):
-        with self.assertRaisesRegex(ValueError, "Paragraphs"):
-            analyze(self.directory, "Whole document", self.docs, backend=self.fake)
+        # One whole document is a single passage: small-collection grouping needs two.
+        with self.assertRaisesRegex(ValueError, "need at least 2"):
+            analyze(self.directory, "Whole document", self.docs[:1], backend=self.fake)
         with self.assertRaises(ValueError):
             analyze(self.directory, "Paragraphs", [self.docs[0], "missing"], backend=self.fake)
         self.assertEqual(self.counts(), [0]*5)

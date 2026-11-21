@@ -26,12 +26,16 @@ def rename_analysis(directory, run_id, name):
     if name.casefold() == NO_ANALYSIS_LABEL.casefold():
         raise ValueError(f"Choose a name other than {NO_ANALYSIS_LABEL}.")
     with connect(directory) as conn:
-        row = conn.execute("SELECT settings_json FROM analysis_runs WHERE id=? AND status='completed'", (run_id,)).fetchone()
+        row = conn.execute(
+            "SELECT settings_json FROM analysis_runs WHERE id=? AND status='completed'", (run_id,)
+        ).fetchone()
         if not row:
             raise ValueError("Select a saved analysis to rename.")
         settings = json.loads(row[0])
         old = settings.get("display_name")
-        for other_id, encoded in conn.execute("SELECT id,settings_json FROM analysis_runs WHERE status='completed' AND id!=?", (run_id,)):
+        for other_id, encoded in conn.execute(
+            "SELECT id,settings_json FROM analysis_runs WHERE status='completed' AND id!=?", (run_id,)
+        ):
             other_name = json.loads(encoded).get("display_name", "")
             if name and name.casefold() == other_name.casefold():
                 raise ValueError("Another analysis already has that name.")
@@ -42,9 +46,14 @@ def rename_analysis(directory, run_id, name):
         else:
             settings.pop("display_name", None)
         conn.execute("UPDATE analysis_runs SET settings_json=? WHERE id=?", (json.dumps(settings), run_id))
-        conn.execute("INSERT INTO history_events VALUES (?, ?, 'analysis_renamed', ?)",
-                     (str(uuid4()), datetime.now(timezone.utc).isoformat(),
-                      json.dumps({"run_id": run_id, "old": old, "new": name or None})))
+        conn.execute(
+            "INSERT INTO history_events VALUES (?, ?, 'analysis_renamed', ?)",
+            (
+                str(uuid4()),
+                datetime.now(timezone.utc).isoformat(),
+                json.dumps({"run_id": run_id, "old": old, "new": name or None}),
+            ),
+        )
 
 
 def segment_count(directory, run_id):
@@ -57,10 +66,24 @@ def history_runs(directory, offset=0, limit=50):
     """One page of runs, newest first. Returns (rows, total_count) for paging."""
     with connect(directory) as conn:
         count = conn.execute("SELECT count(*) FROM analysis_runs").fetchone()[0]
-        rows = conn.execute("SELECT id,started_at,completed_at,status,settings_json,model_info_json FROM analysis_runs ORDER BY started_at DESC,rowid DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
-    return [{"method": method_label(json.loads(settings)), "id": rid, "started": started, "completed": completed, "status": status,
-             "title": analysis_title(settings, completed or started), "settings": json.loads(settings),
-             "model_info": json.loads(info)} for rid, started, completed, status, settings, info in rows], count
+        rows = conn.execute(
+            "SELECT id,started_at,completed_at,status,settings_json,model_info_json FROM analysis_runs ORDER BY"
+            " started_at DESC,rowid DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+    return [
+        {
+            "method": method_label(json.loads(settings)),
+            "id": rid,
+            "started": started,
+            "completed": completed,
+            "status": status,
+            "title": analysis_title(settings, completed or started),
+            "settings": json.loads(settings),
+            "model_info": json.loads(info),
+        }
+        for rid, started, completed, status, settings, info in rows
+    ], count
 
 
 def analysis_details(directory, run_id):
@@ -69,7 +92,10 @@ def analysis_details(directory, run_id):
     Only reads what was recorded at run time.
     """
     with connect(directory) as conn:
-        row = conn.execute("SELECT started_at,completed_at,status,settings_json,model_info_json FROM analysis_runs WHERE id=?", (run_id,)).fetchone()
+        row = conn.execute(
+            "SELECT started_at,completed_at,status,settings_json,model_info_json FROM analysis_runs WHERE id=?",
+            (run_id,),
+        ).fetchone()
         if not row:
             raise ValueError("Analysis not found.")
         started, completed, status, encoded, encoded_info = row
@@ -77,37 +103,58 @@ def analysis_details(directory, run_id):
         doc_ids = settings.get("document_ids", [])
         documents = []
         for doc in doc_ids:
-            name_status = conn.execute("SELECT original_name,extraction_status FROM documents WHERE id=?", (doc,)).fetchone()
+            name_status = conn.execute(
+                "SELECT original_name,extraction_status FROM documents WHERE id=?", (doc,)
+            ).fetchone()
             if name_status:
                 documents.append(name_status[0] + (" [removed]" if name_status[1] == "removed" else ""))
         segments = conn.execute("SELECT count(*) FROM segments WHERE run_id=?", (run_id,)).fetchone()[0]
         source = info.get("parent_run_id")
-        parent = conn.execute("SELECT settings_json,completed_at,started_at FROM analysis_runs WHERE id=?", (source,)).fetchone() if source else None
-    lines = [analysis_title(settings, completed or started), f"Status: {status}",
-             f"Started (UTC): {started}", f"Completed (UTC): {completed or 'Not completed'}",
-             "Documents: " + (", ".join(documents) or "None recorded"), f"Passages: {segments}",
-             f"How documents were split: {UNIT_LABELS.get(settings.get('analysis_unit'), 'Not recorded')}"]
+        parent = (
+            conn.execute(
+                "SELECT settings_json,completed_at,started_at FROM analysis_runs WHERE id=?", (source,)
+            ).fetchone()
+            if source
+            else None
+        )
+    lines = [
+        analysis_title(settings, completed or started),
+        f"Status: {status}",
+        f"Started (UTC): {started}",
+        f"Completed (UTC): {completed or 'Not completed'}",
+        "Documents: " + (", ".join(documents) or "None recorded"),
+        f"Passages: {segments}",
+        f"How documents were split: {UNIT_LABELS.get(settings.get('analysis_unit'), 'Not recorded')}",
+    ]
     lines.append(method_summary(settings, info))
-    segmentation = info.get('segmentation', {})
+    segmentation = info.get("segmentation", {})
     if segmentation:
-        lines.append('Passage splitting: ' + segmentation.get('method', 'Not recorded'))
-        if 'speaker_turns' in segmentation:
+        lines.append("Passage splitting: " + segmentation.get("method", "Not recorded"))
+        if "speaker_turns" in segmentation:
             lines.append(f"Detected speaker turns: {segmentation['speaker_turns']}")
-            lines.append(f"Documents using Auto fallback with all text retained: {segmentation.get('speaker_fallbacks', 0)}")
-        if 'max_tokens' in segmentation:
+            lines.append(
+                f"Documents using Auto fallback with all text retained: {segmentation.get('speaker_fallbacks', 0)}"
+            )
+        if "max_tokens" in segmentation:
             lines.append(f"Model input limit: {segmentation['max_tokens']} tokens (including special tokens)")
             lines.append(f"Oversized passages at preparation: {segmentation.get('oversized', 0)}")
             lines.append(f"Extra splits within sentences: {segmentation.get('forced_splits', 0)}")
-    lines.append('Truncation permission: ' + ('Allowed' if settings.get('allow_truncation') else 'Not allowed'))
+    lines.append("Truncation permission: " + ("Allowed" if settings.get("allow_truncation") else "Not allowed"))
     if parent:
         lines.append("Refined from: " + analysis_title(parent[0], parent[1] or parent[2]))
-    for key, label in [("analysis_style", "Theme size"), ("min_topic_size", "A theme needs at least (passages)"),
-                       ("requested_theme_count", "Requested theme goal"), ("ollama_model", "Local naming model")]:
+    for key, label in [
+        ("analysis_style", "Theme size"),
+        ("min_topic_size", "A theme needs at least (passages)"),
+        ("requested_theme_count", "Requested theme goal"),
+        ("ollama_model", "Local naming model"),
+    ]:
         lines.append(f"{label}: {settings.get(key) if settings.get(key) is not None else 'Automatic / not set'}")
-    lines += ["Ignored keyword words: " + (", ".join(settings.get("ignored_words", [])) or "None"),
-              "Two-word keywords: " + ("No" if settings.get("ngram_range") == [1, 1] else "Yes"),
-              f"Originally produced themes: {info.get('actual_theme_count', 'Not recorded')}",
-              f"Passages not in any theme at first: {info.get('uncategorized_passage_count', 'Not recorded')}"]
+    lines += [
+        "Ignored keyword words: " + (", ".join(settings.get("ignored_words", [])) or "None"),
+        "Two-word keywords: " + ("No" if settings.get("ngram_range") == [1, 1] else "Yes"),
+        f"Originally produced themes: {info.get('actual_theme_count', 'Not recorded')}",
+        f"Passages not in any theme at first: {info.get('uncategorized_passage_count', 'Not recorded')}",
+    ]
     embedding = info.get("embedding_identity") or info.get("source_model_identity") or {}
     lines.append("Embedding model: " + (embedding.get("model") or settings.get("embedding_model") or "Not recorded"))
     if embedding.get("revision") or settings.get("embedding_revision"):
@@ -119,8 +166,12 @@ def analysis_details(directory, run_id):
         for record in attempt.get("records", []):
             state = record.get("status", "unknown")
             outcomes[state] = outcomes.get(state, 0) + 1
-        lines.append(f"Latest naming attempt: {attempt.get('model') or 'Keyword fallback'} · {attempt.get('occurred_at', '')}")
-        lines.append("Naming outcomes: " + ", ".join(f"{key.replace('_', ' ')}: {value}" for key, value in outcomes.items()))
+        lines.append(
+            f"Latest naming attempt: {attempt.get('model') or 'Keyword fallback'} · {attempt.get('occurred_at', '')}"
+        )
+        lines.append(
+            "Naming outcomes: " + ", ".join(f"{key.replace('_', ' ')}: {value}" for key, value in outcomes.items())
+        )
     if info.get("packages"):
         lines.append("Package versions: " + ", ".join(f"{key} {value}" for key, value in info["packages"].items()))
     return "\n".join(lines), {"settings": settings, "model_info": info}
@@ -135,56 +186,87 @@ def history_events(directory, offset=0, limit=100):
     added here.
     """
     with connect(directory) as conn:
-        total = conn.execute("SELECT count(*) FROM history_events WHERE event_type != 'workspace_view_saved'").fetchone()[0]
-        rows = conn.execute("SELECT occurred_at,event_type,details_json FROM history_events WHERE event_type != 'workspace_view_saved' ORDER BY occurred_at DESC,rowid DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+        total = conn.execute(
+            "SELECT count(*) FROM history_events WHERE event_type != 'workspace_view_saved'"
+        ).fetchone()[0]
+        rows = conn.execute(
+            "SELECT occurred_at,event_type,details_json FROM history_events WHERE event_type !="
+            " 'workspace_view_saved' ORDER BY occurred_at DESC,rowid DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
         themes, docs, runs = {}, {}, {}
+
         def theme(tid):
             if not tid:
                 return "Theme"
             if tid not in themes:
-                row = conn.execute("SELECT coalesce(user_label,generated_label,'Unnamed theme') FROM themes WHERE id=?", (tid,)).fetchone()
+                row = conn.execute(
+                    "SELECT coalesce(user_label,generated_label,'Unnamed theme') FROM themes WHERE id=?", (tid,)
+                ).fetchone()
                 themes[tid] = row[0] if row else "Earlier theme"
             return themes[tid]
+
         def document(did):
             if did not in docs:
                 row = conn.execute("SELECT original_name FROM documents WHERE id=?", (did,)).fetchone()
                 docs[did] = row[0] if row else "Document"
             return docs[did]
+
         def run(rid):
             if rid not in runs:
-                row = conn.execute("SELECT settings_json,completed_at,started_at FROM analysis_runs WHERE id=?", (rid,)).fetchone()
+                row = conn.execute(
+                    "SELECT settings_json,completed_at,started_at FROM analysis_runs WHERE id=?", (rid,)
+                ).fetchone()
                 runs[rid] = analysis_title(row[0], row[1] or row[2]) if row else "Earlier analysis"
             return runs[rid]
+
         result = []
         for timestamp, kind, encoded in rows:
             data = json.loads(encoded)
             summary = kind.replace("_", " ").capitalize()
             if kind == "analysis_renamed":
-                summary = f"Analysis renamed: {data.get('old') or 'Automatic name'} → {data.get('new') or 'Automatic name'}"
+                summary = (
+                    f"Analysis renamed: {data.get('old') or 'Automatic name'} → {data.get('new') or 'Automatic name'}"
+                )
             elif kind == "theme_renamed":
                 summary = f"Theme renamed: {data['old']} → {data['new']}"
             elif kind == "theme_created":
                 summary = "Theme created: " + data.get("label", theme(data.get("theme_id")))
             elif kind == "themes_merged":
-                summary = f"Themes merged: {data.get('source_label', 'Earlier theme')} → {data.get('target_label', 'Target theme')}"
+                source, target = data.get("source_label", "Earlier theme"), data.get("target_label", "Target theme")
+                summary = f"Themes merged: {source} → {target}"
             elif kind in {"coding_added", "coding_removed", "model_suggestion_rejected"}:
-                action = {"coding_added": "Passage coded", "coding_removed": "Coding removed", "model_suggestion_rejected": "Model passage rejected"}[kind]
-                summary = f"{action}: {document(data.get('document_id'))} · {theme(data.get('theme_id'))} · characters {data.get('start')}–{data.get('end')}"
+                action = {
+                    "coding_added": "Passage coded",
+                    "coding_removed": "Coding removed",
+                    "model_suggestion_rejected": "Model passage rejected",
+                }[kind]
+                summary = (f"{action}: {document(data.get('document_id'))} · {theme(data.get('theme_id'))}"
+                           f" · characters {data.get('start')}–{data.get('end')}")
             elif kind in {"analysis_completed", "analysis_proposed", "refinement_applied", "refinement_cancelled"}:
                 summary += ": " + run(data.get("run_id"))
                 if data.get("passages") is not None:
                     summary += f" · {data['passages']} passages"
             elif kind == "themes_named":
                 attempt = data.get("attempt", {})
-                summary = f"Theme naming attempt: {run(data.get('run_id'))} · {attempt.get('model') or 'Keyword fallback'}"
+                summary = (
+                    f"Theme naming attempt: {run(data.get('run_id'))} · {attempt.get('model') or 'Keyword fallback'}"
+                )
             elif kind in {"documents_removed", "documents_restored"}:
                 summary += ": " + ", ".join(row.get("name", "Document") for row in data.get("documents", []))
             elif kind == "note_added":
-                target = theme(data["theme_id"]) if data.get("theme_id") else document(data["document_id"]) if data.get("document_id") else "Coded passage"
+                target = (
+                    theme(data["theme_id"])
+                    if data.get("theme_id")
+                    else document(data["document_id"])
+                    if data.get("document_id")
+                    else "Coded passage"
+                )
                 summary = "Note added: " + target
             elif kind == "note_updated":
                 summary = "Note updated: " + data.get("new", "")[:100].replace("\n", " ")
             elif kind == "analysis_setup_selected":
-                summary = f"Analysis setup saved: {data.get('unit', 'Passages')} · {data.get('settings', {}).get('analysis_style', 'Custom')}"
+                summary = (f"Analysis setup saved: {data.get('unit', 'Passages')}"
+                           f" · {data.get('settings', {}).get('analysis_style', 'Custom')}")
             result.append({"timestamp": timestamp, "summary": summary, "kind": kind, "details": data})
     return result, total
