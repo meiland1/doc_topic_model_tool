@@ -203,7 +203,7 @@ def build_visualizations(directory, run_id, progress=None, should_cancel=None, e
         except Exception as exc:
             result['messages']['heatmap'] = 'Heatmap unavailable: ' + str(exc)
     else:
-        result['messages']['heatmap'] = 'Only Uncategorized evidence is available. The similarity heatmap needs a regular theme.'
+        result['messages']['heatmap'] = 'Only passages in "Not in any theme" are available. The similarity heatmap needs a regular theme.'
     check_cancel(should_cancel)
     if len(ordinary) >= 2:
         progress('Building the hierarchy and text topic tree…')
@@ -223,9 +223,9 @@ def build_visualizations(directory, run_id, progress=None, should_cancel=None, e
             if not result['tree']:
                 result['tree'] = result['messages']['hierarchy']
     else:
-        result['messages']['hierarchy'] = 'The hierarchy needs at least two regular themes; Uncategorized is excluded.'
+        result['messages']['hierarchy'] = 'The theme tree needs at least two regular themes; "Not in any theme" is left out.'
         result['tree'] = '\n'.join(labels[t] for t in ordinary) or 'No regular themes.'
     if -1 in labels:
-        result['tree'] += '\n\nOutside hierarchy: ' + labels[-1]
+        result['tree'] += '\n\nNot in the tree: ' + labels[-1]
     check_cancel(should_cancel)
     return result

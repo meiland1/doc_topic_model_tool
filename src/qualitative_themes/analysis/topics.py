@@ -49,7 +49,7 @@ class Passage:
 
 @dataclass
 class TopicOutput:
-    """What a backend returns. `assignments[i]` is the topic of passages[i]; -1 is Uncategorized.
+    """What a backend returns. `assignments[i]` is the topic of passages[i]; -1 is "Not in any theme".
 
     representatives maps topic -> passage ids; scores is empty or one per passage.
     """
@@ -63,6 +63,10 @@ class TopicOutput:
 # Saved with each run as segmentation['method'] so a run records how it was split.
 SEGMENTATION_METHODS = {'Automatic passages': 'automatic-token-v1', 'Interview passages': 'interview-turns-v1',
                         'Paragraphs': 'paragraphs-v1', 'Whole document': 'whole-document-v1'}
+
+
+# Label of the group BERTopic leaves unassigned (topic -1).
+UNGROUPED_LABEL = "Not in any theme"
 
 
 def check_cancel(should_cancel):
@@ -228,7 +232,7 @@ def save_result(directory, unit, document_ids, passages, settings, output, shoul
         for topic, theme_id in mapping.items():
             check_cancel(should_cancel)
             words = [word for word, _ in output.keywords.get(topic, [])[:3]]
-            label = "Uncategorized" if topic == -1 else f"Theme {topic + 1}: " + (", ".join(words) or "Unnamed")
+            label = UNGROUPED_LABEL if topic == -1 else f"Theme {topic + 1}: " + (", ".join(words) or "Unnamed")
             label = output.model_info.get("predefined_topic_labels", {}).get(str(topic), label)
             conn.execute("INSERT INTO themes(id, generated_label, creation_source, status) VALUES (?, ?, 'model', ?)", (theme_id, label, "proposed" if status == "proposed" else "active"))
         for i, (passage, topic) in enumerate(zip(passages, output.assignments)):
@@ -249,7 +253,7 @@ def list_analysis_runs(directory):
 
 
 def apply_topic_goal(model, texts, target, progress):
-    """Reduce only; translate a researcher goal that excludes Uncategorized.
+    """Reduce only; the researcher's goal doesn't count "Not in any theme".
 
     Returns the topic count before reduction. Never increases the topic count.
     """
@@ -375,7 +379,7 @@ def fit_bertopic(passages, settings, directory, progress, should_cancel):
         topics, method_info = zero_shot_partition(passages, embeddings, categories, settings, discover,
                                                  lambda: check_cancel(should_cancel))
         if method_info["zero_shot"]["residual_discovery_skipped"]:
-            progress("Too few unmatched passages for discovery; keeping those passages Uncategorized.")
+            progress(f"Too few unmatched passages to look for more themes; they stay in \"{UNGROUPED_LABEL}\".")
         # Reuse the existing BERTopic fixed-partition path for c-TF-IDF keywords.
         from qualitative_themes.analysis.refinement import fixed_partition_backend
         represented = fixed_partition_backend(passages, topics, settings, "words", progress, should_cancel)

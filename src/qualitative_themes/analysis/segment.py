@@ -6,6 +6,10 @@ from dataclasses import dataclass
 UNITS = ("Automatic passages", "Interview passages", "Paragraphs", "Whole document")
 DEFAULT_UNIT = UNITS[0]
 
+# How each choice is named on screen and in analysis titles.
+UNIT_LABELS = {"Automatic passages": "Split automatically", "Interview passages": "Split by speaker",
+               "Paragraphs": "Split by paragraph", "Whole document": "Whole documents"}
+
 # These two are packed to fit the embedding model's token limit.
 TOKEN_SAFE_UNITS = {'Automatic passages', 'Interview passages'}
 

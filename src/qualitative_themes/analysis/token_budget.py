@@ -8,6 +8,7 @@ import threading
 
 from qualitative_themes.analysis.encoder import embedding_source, MISSING_MESSAGE
 from qualitative_themes.analysis.settings import AnalysisSettings
+from qualitative_themes.runtime.paths import missing_files_fix
 
 _lock = threading.Lock()
 
@@ -64,4 +65,4 @@ def _load(kind, path, model, revision):
                            'tokenizer_files_sha256': fingerprints,
                            'max_tokens': maximum, 'special_tokens_included': True})
     except Exception as exc:
-        raise ValueError('The local tokenizer or model limit could not be read. Use Check & repair or reinstall the app.') from exc
+        raise ValueError('The theme-finding model could not be read. Use Check & repair, or ' + missing_files_fix() + '.') from exc

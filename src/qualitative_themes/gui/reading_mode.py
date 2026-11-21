@@ -128,7 +128,7 @@ class GuidedReadingDialog(QDialog):
         not_relevant = sum(1 for item in self.queue if item["verdict"] == "not_relevant")
         if judged >= 5 and not_relevant / judged >= SPLIT_HINT_SHARE:
             self.hint.setText(f"{not_relevant} of {judged} passages marked not relevant. This theme may mix two ideas: "
-                              "consider splitting or renaming it in the Research Workspace.")
+                              "consider splitting or renaming it in Read & code.")
             self.hint.show()
         else:
             self.hint.hide()

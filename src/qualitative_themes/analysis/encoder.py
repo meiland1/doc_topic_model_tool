@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import threading
 
-from qualitative_themes.runtime.paths import bundled_embedding_model
+from qualitative_themes.runtime.paths import bundled_embedding_model, missing_files_fix
 
 MISSING_MESSAGE = ("The theme-finding model is missing from this installation. "
-                   "Open the start screen and choose Check & repair, or reinstall the app.")
+                   "Open the start screen and choose Check & repair, or " + missing_files_fix() + ".")
 
 _lock = threading.Lock()
 _cache: dict = {}

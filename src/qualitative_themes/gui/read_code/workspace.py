@@ -44,7 +44,7 @@ from qualitative_themes.gui.read_code.tree_panel import TreePanelMixin
 
 
 class CodingWorkspace(AnalysisBarMixin, TreePanelMixin, ReaderMixin, CodingActionsMixin, NotesMixin, QWidget):
-    """The Research Workspace tab. MainWindow calls set_project() and the open_* methods."""
+    """The Read & code tab. MainWindow calls set_project() and the open_* methods."""
     search_requested = Signal()
 
     def __init__(self, parent=None):
@@ -87,11 +87,15 @@ class CodingWorkspace(AnalysisBarMixin, TreePanelMixin, ReaderMixin, CodingActio
         splitter.setStretchFactor(1, 3)
         splitter.setStretchFactor(2, 1)
         splitter.setStretchFactor(3, 1)
+        # Used when the workspace stands alone (tests). Inside MainWindow the Edit
+        # menu owns these keys, so it switches them off (see disable_own_shortcuts).
+        self._own_shortcuts = []
         for keys, handler in [("Ctrl+F", self.open_find), (QKeySequence.StandardKey.Undo, self.undo_stack.undo),
                               (QKeySequence.StandardKey.Redo, self.undo_stack.redo)]:
             shortcut = QShortcut(QKeySequence(keys), self)
             shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             shortcut.activated.connect(handler)
+            self._own_shortcuts.append(shortcut)
         outer.addWidget(splitter, 1)
         self.status = QLabel("Open a project to start coding.")
         outer.addWidget(self.status)
@@ -150,6 +154,11 @@ class CodingWorkspace(AnalysisBarMixin, TreePanelMixin, ReaderMixin, CodingActio
         scroll = view.get('scroll')
         if type(scroll) is int and scroll >= 0:
             self.viewer.verticalScrollBar().setValue(scroll)
+
+    def disable_own_shortcuts(self):
+        """Hand Ctrl+F / Ctrl+Z / Ctrl+Y over to the window's Edit menu (two owners would cancel out)."""
+        for shortcut in self._own_shortcuts:
+            shortcut.setEnabled(False)
 
     def set_project(self, directory: Path):
         """Point the workspace at a project. Clears undo history, scope and selection."""

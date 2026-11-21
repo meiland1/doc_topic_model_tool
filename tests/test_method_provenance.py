@@ -37,14 +37,14 @@ class MethodProvenanceTests(unittest.TestCase):
 
     def test_history_configuration_and_legacy_method(self):
         text,_=analysis_details(self.directory,self.run)
-        self.assertIn('Zero-shot topics + discovery',text)
+        self.assertIn('Start from my own list of themes',text)
         self.assertIn('Care access | Access to medication',text)
         self.assertIn('Initially matched passages: 2',text)
         self.assertIn('Categories with no initial matches: Stress',text)
         self.assertIn('not confidence',text)
-        self.assertEqual(history_runs(self.directory)[0][0]['method'],'Zero-shot topics + discovery')
-        self.assertEqual(method_label({}),'General discovery')
-        self.assertEqual(method_label({},manual=True),'Manual coding only')
+        self.assertEqual(history_runs(self.directory)[0][0]['method'],'Start from my own list of themes')
+        self.assertEqual(method_label({}),'Let the tool find themes')
+        self.assertEqual(method_label({},manual=True),'My coding only (no analysis)')
 
     def test_renamed_and_merged_theme_keeps_origins(self):
         rename_theme(self.directory,self.topics[0],'Treatment barriers')
@@ -124,21 +124,21 @@ class MethodProvenanceTests(unittest.TestCase):
         from qualitative_themes.analysis.refinement import load_source
         app=QApplication.instance() or QApplication([])
         workspace=CodingWorkspace();workspace.set_project(self.directory)
-        self.assertIn('Zero-shot',workspace.method_status.text())
+        self.assertIn('Start from my own list of themes',workspace.method_status.text())
         self.assertIn('Care access',workspace.method_status.toolTip())
         for i in range(workspace.themes.count()):
             workspace.themes.setCurrentRow(i)
             if workspace.current_theme_id()==self.topics[0]:
-                self.assertIn('Predefined category',workspace.theme_origin_label.text())
+                self.assertIn('From your own list of themes',workspace.theme_origin_label.text())
                 self.assertIn('Care access',workspace.theme_origin_label.toolTip())
         workspace.run_choice.setCurrentIndex(workspace.run_choice.findData(None))
-        self.assertIn('Manual coding only',workspace.method_status.text())
+        self.assertIn('No analysis',workspace.method_status.text())
         history=AnalysisHistoryDialog(self.directory)
-        self.assertIn('Zero-shot',history.widgets['runs']['rows'].item(0).text())
+        self.assertIn('Start from my own list of themes',history.widgets['runs']['rows'].item(0).text())
         source=load_source(self.directory,self.run)
         refine=RefinementSetupDialog(source,operation='reduce')
         self.assertFalse(refine.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled())
-        self.assertIn('protect predefined',refine.consequences.text())
+        self.assertIn('your themes stay as you wrote them',refine.consequences.text())
         for widget in [workspace,history,refine]:
             widget.close();widget.deleteLater()
         app.processEvents()

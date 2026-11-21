@@ -22,11 +22,11 @@ class ProjectGuide(QWidget):
         layout.addWidget(self.intro)
         self.buttons = {}
         steps = [
-            ('add', '1. Add documents', 'Import PDF, DOCX, or TXT files. Keep the original files available for reference.'),
-            ('check', '2. Check extracted text', 'Open a document in Documents. Check missing text, paragraph breaks, and speaker labels before analysis.'),
-            ('topics', '3. Explore suggested topics (optional)', 'Select documents and choose Analyze. Review the passage preview. Suggested topics guide reading; they are not validated findings.'),
-            ('code', '4. Read, code, and comment', 'Open Research Workspace. Select source text, create or apply a theme/code, and add a comment. You can do this without running AI.'),
-            ('export', '5. Export your work', 'Use Export in Research Workspace to choose a codebook or coded passages. Review what will be shared.'),
+            ('add', '1. Add documents', 'PDF, Word or text files. Keep the originals somewhere safe; the project keeps its own copy.'),
+            ('check', '2. Check the text', 'Open each document on Documents & analysis and look for missing text, broken paragraphs and speaker labels.'),
+            ('topics', '3. Find themes (optional)', 'Select documents and choose Find themes. The themes are suggestions to read, not findings.'),
+            ('code', '4. Read & code', 'Select text, then press a number key or click a theme. Add comments as you go. This works without the AI.'),
+            ('export', '5. Export your work', 'File → Export: a codebook, your coded passages, or a reading guide.'),
         ]
         for key, title, description in steps:
             button = QPushButton(title)
@@ -38,9 +38,9 @@ class ProjectGuide(QWidget):
             label.setWordWrap(True)
             layout.addWidget(label)
         self.practice_help = QLabel('Practice: open interview A and find the missed bus appointment. Select the passage, '
-                                    'create a code such as “Transport barriers”, and add a comment explaining your choice. '
+                                    'make a theme such as “Transport barriers”, and add a comment explaining your choice. '
                                     'Then read interview C for a different account. Export your codebook and reopen this '
-                                    'project from Recent projects. These are exercises, not correct answers.')
+                                    'project from Recent projects. These are exercises; there are no right answers.')
         self.practice_help.setWordWrap(True)
         layout.addWidget(self.practice_help)
         self.fresh = QPushButton('Start a fresh practice copy')
@@ -53,7 +53,7 @@ class ProjectGuide(QWidget):
 
     def set_project(self, project, practice=False):
         self.intro.setText(('Practice project — all interviews are fictional. No AI setup is needed for the coding exercise.\n'
-                            if practice else 'Start with close reading, or use optional topic suggestions to choose where to read.\n')
+                            if practice else 'Start with close reading, or let the tool suggest themes to choose where to read.\n')
                            + f'Project: {project.name}\nSaved in: {project.directory}')
         self.practice_help.setVisible(practice)
         self.fresh.setVisible(practice)

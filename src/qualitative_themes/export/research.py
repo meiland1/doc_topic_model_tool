@@ -16,7 +16,7 @@ from qualitative_themes.storage.coding import (
 )
 from qualitative_themes.storage.database import connect, DB_NAME
 from qualitative_themes.storage.history import analysis_title
-from qualitative_themes.storage.provenance import theme_provenance_from_connection, method_label, origin_text
+from qualitative_themes.storage.provenance import NO_ANALYSIS_LABEL, theme_provenance_from_connection, method_label, origin_text
 from qualitative_themes.storage.theme_keywords import theme_keywords_from_connection
 
 RANGE_COUNTS = ("One row per unique (document, start, end) range. All active themes on that exact range "
@@ -44,12 +44,12 @@ def build_export(directory, run_id=None, progress=None, should_cancel=None):
     with connect(directory) as conn:
         conn.execute("BEGIN")
         project = conn.execute("SELECT id,name FROM project").fetchone()
-        settings, info, completed, title = {}, {}, None, "Manual coding only"
+        settings, info, completed, title = {}, {}, None, NO_ANALYSIS_LABEL
         scope = None
         if run_id:
             row = conn.execute("SELECT settings_json,model_info_json,completed_at FROM analysis_runs WHERE id=? AND status='completed'", (run_id,)).fetchone()
             if not row:
-                raise ValueError("Choose a completed analysis or Manual coding only to export.")
+                raise ValueError(f"Choose a completed analysis, or {NO_ANALYSIS_LABEL}, to export.")
             settings, info, completed = json.loads(row[0]), json.loads(row[1]), row[2]
             title = analysis_title(settings, completed)
             scope = analysis_document_ids_from_connection(conn, run_id)
@@ -91,6 +91,7 @@ def build_export(directory, run_id=None, progress=None, should_cancel=None):
                 if sid in info.get("representative_segment_ids", {}).get(str(topic), []):
                     representatives.setdefault(tid, set()).add((doc, start, end))
         codebook, range_groups = [], {}
+        keyword_cache = {}  # parsed run keywords, shared across themes
         for number, (tid, label, description, creation, user_label) in enumerate(theme_rows):
             check()
             assignments = effective_assignments_from_connection(conn, tid, run_id)
@@ -102,7 +103,7 @@ def build_export(directory, run_id=None, progress=None, should_cancel=None):
             rep_keys = representatives.get(tid, set())
             selected = sorted(keys, key=lambda key: (key not in rep_keys, doc_order.get(key[0], len(doc_order)), key[1], key[2]))[:3]
             covered = sorted({doc for doc, _, _ in keys}, key=lambda doc: doc_order[doc])
-            words = theme_keywords_from_connection(conn, tid, run_id)
+            words = theme_keywords_from_connection(conn, tid, run_id, keyword_cache)
             provenance = theme_provenance_from_connection(conn, tid, run_id)
             entry = {"topic_origin": origin_text(provenance), "topic_origins": provenance["origins"],
                      "supplied_category_names": provenance["supplied_names"], "theme_id": tid, "theme": label, "description": description or "",

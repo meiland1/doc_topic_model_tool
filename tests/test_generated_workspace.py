@@ -46,7 +46,7 @@ def test_generated_highlights_cross_document_and_utf16(generated_workspace):
     assert workspace.viewer.textCursor().selectedText() == match[5]
     assert "😀" in match[5]
     assert workspace.viewer.extraSelections()
-    assert "Model suggestion" in workspace.range_themes.text()
+    assert "Suggested by the tool" in workspace.range_themes.text()
 
 
 def test_note_accepts_suggestion_and_removal_stays_removed(generated_workspace):
@@ -79,10 +79,10 @@ def test_setup_inspects_corpus_and_validates_presets(generated_workspace):
         assert dialog.summary["count"] == 12
         analyze_button = dialog.buttons.button(QDialogButtonBox.StandardButton.Ok)
         assert analyze_button.isEnabled()
-        dialog.style.setCurrentText("Broad")
+        dialog.set_style("Broad")
         assert analyze_button.isEnabled()
         assert "Small corpus" in dialog.validation.text()
-        dialog.style.setCurrentText("Detailed")
+        dialog.set_style("Detailed")
         assert dialog.minimum.value() == 3
         assert analyze_button.isEnabled()
         dialog.number_mode.setCurrentIndex(1)
@@ -230,21 +230,17 @@ def test_remove_restore_controls_and_saved_workspace_evidence(generated_workspac
         assert window.workspace.run_id == run
         assert window.workspace.document_choice.findData(docs[0]) >= 0
         assert "[removed]" in window.workspace.document_choice.itemText(window.workspace.document_choice.findData(docs[0]))
-        assert window.restore_documents_button.isEnabled()
-        def restore(dialog):
-            choices = dialog.findChild(QListWidget)
-            choices.setCurrentRow(0)
-            return QDialog.DialogCode.Accepted
-        monkeypatch.setattr(QDialog, "exec", restore)
-        window.restore_removed_documents()
+        # Adding the same file again brings the document back with its coding (no separate restore button).
+        from qualitative_themes.storage.documents import restore_documents
+        restore_documents(directory, [docs[0]])
+        window.refresh_documents()
         assert window.document_list.count() == 2
-        assert not window.restore_documents_button.isEnabled()
         assert window.workspace.matches
     finally:
         window.close()
 
 
-def test_removing_all_documents_leaves_import_and_restore_available(generated_workspace, monkeypatch):
+def test_removing_all_documents_leaves_adding_available(generated_workspace, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
     app, workspace, docs, directory, run = generated_workspace
     window = MainWindow()
@@ -257,7 +253,6 @@ def test_removing_all_documents_leaves_import_and_restore_available(generated_wo
         assert not window.document_list.count()
         assert not window.remove_documents_button.isEnabled()
         assert window.import_button.isEnabled()
-        assert window.restore_documents_button.isEnabled()
         assert window.workspace.run_id == run
         assert window.workspace.matches
     finally:
@@ -291,7 +286,7 @@ def test_five_passage_docx_enables_analyze_with_small_corpus_warning(tmp_path):
     try:
         assert dialog._inspection is None
         assert dialog.summary["count"] == 5
-        assert dialog.style.currentText() == "Balanced"
+        assert dialog.style_key() == "Balanced"
         assert dialog.minimum.value() == 2
         assert dialog.auto_names.isChecked()
         assert dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
@@ -332,7 +327,7 @@ def test_coded_passage_export_worker_preserves_selected_run(generated_workspace,
     window.start_research_export('passages')
     worker = window._analysis_worker
     assert worker is not None
-    assert not window.workspace.export_passages_button.isEnabled()
+    assert not window.add_documents_action.isEnabled()  # File menu items wait while a task runs
     loop = QEventLoop()
     worker.finished.connect(loop.quit)
     QTimer.singleShot(10000, loop.quit)
@@ -340,7 +335,7 @@ def test_coded_passage_export_worker_preserves_selected_run(generated_workspace,
     app.processEvents()
     assert window._analysis_worker is None
     assert window.workspace.run_id == run
-    assert window.workspace.export_passages_button.isEnabled()
+    assert window.add_documents_action.isEnabled()
     with destination.open(encoding='utf-8-sig', newline='') as stream:
         rows = list(csv.DictReader(stream))
     assert len(rows) == 12
@@ -464,6 +459,6 @@ def test_visualizations_persist_across_tab_switches_and_sessions(generated_works
     second.tabs.setCurrentWidget(second.visualizations)
     assert second.visualizations.tree.toPlainText() == 'Saved tree'
     assert second.visualizations.themes.count() > 0
-    assert 'match the current coding' in second.visualizations.status.text()
+    assert 'match your current coding' in second.visualizations.status.text()
     assert len(builds) == 1
     second.close()

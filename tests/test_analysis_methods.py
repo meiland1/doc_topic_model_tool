@@ -107,7 +107,7 @@ class SavedCategoryTests(unittest.TestCase):
             with connect(directory) as conn:
                 recorded = json.loads(conn.execute('SELECT settings_json FROM analysis_runs WHERE id=?',(run,)).fetchone()[0])
             self.assertEqual(recorded['analysis_method'], 'zero_shot')
-            with self.assertRaisesRegex(ValueError,'disabled'):
+            with self.assertRaisesRegex(ValueError,'turned off'):
                 propose_refinement(directory,run,'reduce',replace(settings,requested_theme_count=1))
             def keyword_refresh(passages, assignments, *args):
                 return TopicOutput([0], {0:[('treatment',.6)]})

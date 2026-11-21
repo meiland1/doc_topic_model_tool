@@ -10,10 +10,10 @@ PRESETS = {
     "Exploratory": {"min_topic_size": 2, "min_samples": 1, "n_neighbors": 5, "cluster_selection_method": "leaf"},
 }
 STYLE_HELP = {
-    "Balanced": "A starting point for recurring ideas and supporting evidence.",
-    "Broad": "Favor larger groups of evidence; small ideas may remain Uncategorized.",
-    "Detailed": "Look for smaller groups and more specific ideas in a new discovery run.",
-    "Exploratory": "Look for small candidate groups; expect more provisional themes to review.",
+    "Balanced": "A good place to start: themes that come up again and again.",
+    "Broad": "Fewer, larger themes. Small ideas may end up in \"Not in any theme\".",
+    "Detailed": "More themes, each about something more specific.",
+    "Exploratory": "Many small themes. Expect more to review, and some that don't hold up.",
 }
 
 
@@ -23,9 +23,9 @@ DEFAULT_NAMING_MODEL = "llama3.1:8b"
 
 
 ANALYSIS_METHODS = {
-    "general": "General discovery",
-    "guided": "Guided discovery",
-    "zero_shot": "Zero-shot topics + discovery",
+    "general": "Let the tool find themes",
+    "guided": "Find themes, nudged by my keywords",
+    "zero_shot": "Start from my own list of themes",
 }
 
 
@@ -148,7 +148,7 @@ def validate_settings(settings, count):
     if settings.analysis_style not in PRESETS:
         raise ValueError("Choose a supported analysis style.")
     if settings.min_topic_size < 2 or settings.batch_size < 1 or settings.min_samples < 1 or settings.n_neighbors < 2:
-        raise ValueError("Minimum evidence must be at least 2; other advanced counts must be positive.")
+        raise ValueError("A theme needs at least 2 passages; the other counts must be above zero.")
     if settings.cluster_selection_method not in {"eom", "leaf"} or settings.ngram_range not in {(1, 1), (1, 2)}:
         raise ValueError("Choose supported clustering and keyword settings.")
     if not settings.embedding_model.strip() or not settings.embedding_revision.strip():
@@ -169,7 +169,7 @@ def small_corpus_warning(settings, count):
     """A warning string for small corpora, or '' when the corpus is big enough."""
     if count < max(10, settings.min_topic_size * 2):
         return (f"Small corpus: {count} passages. Analysis can run, but may find few themes "
-                "or leave passages Uncategorized. Treat names and groups as preliminary.")
+                "or leave many passages in \"Not in any theme\". Treat names and groups as preliminary.")
     return ""
 
 
@@ -187,7 +187,7 @@ def effective_parameters(settings, count):
         return {"matching": {"metric": "cosine", "minimum_similarity": settings.zeroshot_min_similarity,
                              "assignment": "single best matching description"},
                 "residual_discovery": {"minimum_passages": max(3, settings.min_topic_size),
-                                       "parameters": "Computed for the unmatched subset; below minimum remains Uncategorized."},
+                                       "parameters": "Computed for the unmatched subset; below the minimum they stay ungrouped."},
                 "vectorizer": {"stop_words": "english", "additional_stop_words": list(settings.ignored_words),
                                "ngram_range": list(settings.ngram_range), "min_df": 1},
                 "reduction": {"aim_for_themes": None, "disabled": True}}

@@ -32,9 +32,9 @@ class TasksMixin:
         if self.workspace.run_id:
             count, _ = result_summary(self.project.directory, self.workspace.run_id)
             if count > AUTO_NAMING_LIMIT and QMessageBox.question(
-                    self, 'Many topics to name',
-                    f'This analysis has {count} topics. Naming them may take a long time. '
-                    'You can keep keyword names or reduce the topics first. Request names for all of them?',
+                    self, 'Many themes to name',
+                    f'This analysis has {count} themes. Naming them may take a long time. '
+                    'You can keep keyword names, or combine similar themes first. Name all of them?',
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
                 return
@@ -55,8 +55,8 @@ class TasksMixin:
         self._analysis_worker = worker
         worker.progress.connect(self.visualizations.status.setText)
         worker.result.connect(self.visualizations.display_result)
-        worker.failed.connect(lambda message: self.visualizations.status.setText("Visualization failed: " + message))
-        worker.cancelled.connect(lambda: self.visualizations.status.setText("Visualization cancelled. Saved research is unchanged."))
+        worker.failed.connect(lambda message: self.visualizations.status.setText("Couldn't make the charts: " + message))
+        worker.cancelled.connect(lambda: self.visualizations.status.setText("Charts cancelled. Nothing was changed."))
         worker.finished.connect(self.analysis_finished)
         for button in [self.import_button, self.analyze_button]:
             button.setEnabled(False)
@@ -86,6 +86,8 @@ class TasksMixin:
             return
         filters = "Codebook CSV (*.csv);;Codebook JSON (*.json)" if kind == "codebook" else "Coded passages CSV (*.csv)"
         title = "Export codebook" if kind == "codebook" else "Export coded passages"
+        if not self.workspace.directory:
+            self.workspace.set_project(self.project.directory)
         path, selected_filter = QFileDialog.getSaveFileName(self, title, f"{kind}.csv", filters)
         if not path:
             return
@@ -112,7 +114,7 @@ class TasksMixin:
         self.cancel_analysis_button.setEnabled(True)
         self.workspace.cancel_task_button.setEnabled(True)
         self.update_naming_controls()
-        self.task_status("Preparing a read-only snapshot of effective coding…")
+        self.task_status("Gathering your coding for the export…")
         self.track_task(worker)
         worker.start()
 
@@ -134,12 +136,13 @@ class TasksMixin:
             if operation == "discover":
                 available = {doc for doc, _, status in list_documents(self.project.directory) if status == "ready"}
                 if not set(source["documents"]).issubset(available):
-                    raise ValueError("This saved analysis includes removed documents. Restore them before fresh discovery, or analyze a new selection of available documents.")
+                    raise ValueError("This analysis includes documents you've removed. Add them again first, "
+                                     "or find themes in a new selection of documents.")
                 settings = replace(settings, requested_theme_count=None)
                 chosen = [(doc, get_document(self.project.directory, doc)[0]) for doc in source["documents"]]
                 dialog = AnalysisSetupDialog(self.project.directory, chosen, settings, unit, [m for m in models if m], self)
-                dialog.setWindowTitle("Fresh discovery proposal — Analysis Setup")
-                dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Prepare proposal")
+                dialog.setWindowTitle("Find themes again with new settings")
+                dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Prepare changes")
                 if dialog.exec() != QDialog.DialogCode.Accepted:
                     dialog.deleteLater()
                     return
@@ -149,12 +152,12 @@ class TasksMixin:
                                                      operation, settings, unit, self)
         except Exception as exc:
             traceback.print_exc()
-            QMessageBox.warning(self, "Could not prepare refinement", str(exc))
+            QMessageBox.warning(self, "Could not prepare the changes", str(exc))
             return
         worker = self._analysis_worker
         worker.progress.connect(self.task_status)
-        worker.failed.connect(lambda message: self.task_status("Refinement failed: " + message))
-        worker.cancelled.connect(lambda: self.task_status("Refinement cancelled. Selected analysis and research decisions are unchanged."))
+        worker.failed.connect(lambda message: self.task_status("Couldn't adjust the themes: " + message))
+        worker.cancelled.connect(lambda: self.task_status("Cancelled. Your analysis and coding are unchanged."))
         worker.result.connect(self.refinement_ready)
         worker.finished.connect(self.analysis_finished)
         for button in [self.import_button, self.analyze_button]:
@@ -162,7 +165,7 @@ class TasksMixin:
         self.cancel_analysis_button.setEnabled(True)
         self.workspace.cancel_task_button.setEnabled(True)
         self.update_naming_controls()
-        self.task_status("Preparing a separate proposal…")
+        self.task_status("Preparing the changes for you to review…")
         self.track_task(worker)
         worker.start()
 
@@ -178,12 +181,12 @@ class TasksMixin:
             dialog.deleteLater()
             if applied:
                 self.analysis_ready(proposal_id, segment_count(self.project.directory, proposal_id))
-                self.task_status("Refinement applied. Earlier analyses and all research decisions remain saved.")
+                self.task_status("Changes applied. Your earlier analyses and coding are kept.")
             else:
-                self.task_status("Proposal cancelled. Selected analysis and research decisions are unchanged.")
+                self.task_status("Cancelled. Nothing was changed.")
         except Exception as exc:
             traceback.print_exc()
-            self.task_status("Proposal remains saved for review: " + str(exc))
+            self.task_status("The adjusted themes are still saved for review: " + str(exc))
         self.update_naming_controls()
 
     def review_pending_refinement(self):
@@ -195,7 +198,7 @@ class TasksMixin:
         from qualitative_themes.analysis.refinement import OPERATIONS
         displays = [f"{i+1}. {started[:19]} · {OPERATIONS[json.loads(info)['refinement_operation']][0]}"
                     for i, (_, started, info) in enumerate(proposals)]
-        choice, ok = QInputDialog.getItem(self, "Pending refinements", "Choose a saved proposal", displays, 0, False)
+        choice, ok = QInputDialog.getItem(self, "Review adjusted themes", "Choose the changes to review", displays, 0, False)
         if ok:
             self.refinement_ready(proposals[displays.index(choice)][0])
 
@@ -211,7 +214,7 @@ class TasksMixin:
             return
         documents = [item.data(Qt.ItemDataRole.UserRole) for item in self.document_list.selectedItems()]
         if not run_id and not documents:
-            self.import_status.setText("Select documents to analyze together (Ctrl/Shift selects several).")
+            self.import_status.setText("Select the documents to include, then choose Find themes.")
             return
         settings = self.analysis_settings
         if not run_id:
@@ -268,7 +271,7 @@ class TasksMixin:
         self.task_progress.begin(title)
         worker.progress.connect(self.task_progress.update_stage)
         worker.failed.connect(lambda message: self.task_progress.terminal("failed", "Failed · " + message))
-        worker.cancelled.connect(lambda: self.task_progress.terminal("cancelled", "Cancelled · Any completed analysis and researcher work remain saved."))
+        worker.cancelled.connect(lambda: self.task_progress.terminal("cancelled", "Cancelled · Saved analyses and your coding are unchanged."))
 
     def cancel_analysis(self):
         """Ask the current worker to stop. It stops at its next check_cancel(), not immediately."""
@@ -290,7 +293,7 @@ class TasksMixin:
         self.overview.set_run(self.project.directory, run_id)
         self.tabs.setCurrentWidget(self.overview)
         themes, uncategorized = result_summary(self.project.directory, run_id)
-        self.task_status(f"Analysis complete: {themes} discovered themes · {count} passages · {uncategorized} Uncategorized passages.")
+        self.task_status(f"Themes found: {themes} · {count} passages · {uncategorized} not in any theme.")
         self.workspace.naming_status.setPlainText(labeling_report(self.project.directory, run_id))
 
     def worker_matches_project(self, worker):

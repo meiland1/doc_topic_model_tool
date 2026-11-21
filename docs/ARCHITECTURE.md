@@ -23,6 +23,9 @@ src/qualitative_themes/
     workers.py          the worker threads the main window starts
     read_code/          the Read & code tab, one file per area (trees, reader, coding, notes...)
     settings_form.py    keyword and naming controls shared by the Find themes and Adjust themes dialogs
+    menus.py            the File and Edit menus
+    strings.py          names that appear in more than one place (tabs, menu items, "Not in any theme")
+    restore_dialog.py   one dialog for restoring from a daily safety copy or a backup file
 packaging/        PyInstaller spec, Windows installer, macOS DMG script
 scripts/          fetch bundled resources, build model packs
 tests/            pytest; runs headless (QT_QPA_PLATFORM=offscreen)
@@ -166,6 +169,10 @@ Projects from the 0.2 test versions (versions 1 and 2) were only ever test proje
 - **New kind of history event:** write it with the same `INSERT INTO history_events` pattern, then add a readable summary branch in `storage/history.history_events()`.
 - **New background task:** subclass `WorkerThread` with the usual signals, start it from `gui/tasks.py` in the `_analysis_worker` slot, and call `track_task()` so it gets the progress strip and Cancel.
 - **New tab:** build it in `MainWindow.__init__`, give it a `set_project()` / `set_run()` method, and call that from `_show_project()`.
+
+## Wording
+
+The words on screen come from the rename sheet we worked through for 0.3 (NVivo-style terms where researchers already know them: code, uncode, codebook, memo/comment). `tests/test_wording.py` lists every label we retired and fails if one shows up again anywhere in `src/`, comments included. If you rename something on purpose, add the old text to that list. Names used in more than one place go in `gui/strings.py`.
 
 ## Tests
 

@@ -50,10 +50,11 @@ class ProjectSessionMixin:
                 if self.document_list.count() and not self.document_list.selectedItems():
                     self.document_list.setCurrentRow(0)
                 self.document_list.setFocus()
+        elif action == 'export':
+            from PySide6.QtGui import QCursor
+            self.export_menu.exec(QCursor.pos())
         else:
             self.tabs.setCurrentWidget(self.workspace)
-            if action == 'export':
-                self.workspace.export_button.setFocus()
 
     def open_recent(self, path):
         if self.blocked_by_task("switching projects"):
@@ -80,7 +81,6 @@ class ProjectSessionMixin:
             return
         self.save_reading_position()
         self.project = project
-        self.backup_action.setEnabled(True)
         self.pages.setCurrentWidget(self.project_page)
         try:
             from qualitative_themes.runtime import app_settings
@@ -95,7 +95,7 @@ class ProjectSessionMixin:
         self.setWindowTitle(f"{project.name} — Topic Model Tool")
         self.status.setText(f"Project: {project.name}\nLocation: {project.directory}")
         self.import_button.setEnabled(True)
-        self.import_status.setText("Project ready. Import PDF, DOCX, or TXT documents.")
+        self.import_status.setText("Project ready. Add PDF, Word or text documents.")
         self.refresh_documents()
         self.workspace.set_project(project.directory)
         self.overview.set_run(project.directory, self.workspace.run_id)
@@ -162,8 +162,26 @@ class ProjectSessionMixin:
                                 "It includes source documents and saved research work. Store it somewhere appropriate "
                                 "for your data; the backup is not encrypted.")
 
+    def restore_project(self):
+        """File → Restore a project… / start screen: pick a safety copy or a backup file, then restore it."""
+        if self.blocked_by_task("restoring a project"):
+            return
+        from qualitative_themes.gui.restore_dialog import RestoreDialog
+        dialog = RestoreDialog(self.project.directory if self.project else None, self)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        archive = dialog.chosen_snapshot()
+        use_backup_file = dialog.from_backup.isChecked()
+        dialog.deleteLater()
+        if not accepted:
+            return
+        if use_backup_file:
+            archive, _ = QFileDialog.getOpenFileName(self, "Choose a project backup", "", "Project backup (*.tmtbackup)")
+        if archive:
+            self.restore_project_backup(archive)
+
     def restore_project_backup(self, archive=None):
-        if self.blocked_by_task("restoring a backup"):
+        """Restore `archive` (a backup or safety copy) into a new folder the researcher names."""
+        if self.blocked_by_task("restoring a project"):
             return
         if not self.flush_comments():
             return

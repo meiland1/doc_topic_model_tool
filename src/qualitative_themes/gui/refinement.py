@@ -14,6 +14,7 @@ from qualitative_themes.analysis.topics import AnalysisCancelled
 
 from qualitative_themes.gui.worker import WorkerThread
 from qualitative_themes.gui.settings_form import KeywordOptions, naming_model_choice
+from qualitative_themes.gui import strings
 
 
 class RefinementWorker(WorkerThread):
@@ -52,7 +53,7 @@ class RefinementSetupDialog(QDialog):
     def __init__(self, source, models=(), parent=None, operation=None):
         super().__init__(parent)
         self.source = source
-        self.setWindowTitle("Refine Analysis")
+        self.setWindowTitle(strings.ADJUST_THEMES)
         self.resize(620, 520)
         outer = QVBoxLayout(self)
         form = QFormLayout()
@@ -61,7 +62,7 @@ class RefinementSetupDialog(QDialog):
             self.operation.addItem(title, key)
         if operation:
             self.operation.setCurrentIndex(self.operation.findData(operation))
-        form.addRow("Operation", self.operation)
+        form.addRow("What would you like to change?", self.operation)
         self.consequences = QLabel()
         self.consequences.setWordWrap(True)
         form.addRow(self.consequences)
@@ -69,21 +70,21 @@ class RefinementSetupDialog(QDialog):
         self.theme_count = len(set(source["output"].assignments) - {-1})
         self.target.setRange(1, max(1, self.theme_count - 1))
         self.target.setValue(max(1, self.theme_count - 1))
-        form.addRow("Fewer themes (excluding Uncategorized)", self.target)
+        form.addRow('Combine into this many themes (not counting "Not in any theme")', self.target)
         self.keywords = KeywordOptions(form, source["settings"], tooltips=False)
         self.ignored, self.phrases = self.keywords.ignored, self.keywords.phrases
-        self.model = naming_model_choice(models, source["settings"].ollama_model, fallback_label="Keyword fallback")
-        form.addRow("Installed local Ollama model", self.model)
-        self.auto_names = QCheckBox("Name proposed themes with local Ollama")
+        self.model = naming_model_choice(models, source["settings"].ollama_model, fallback_label="Don't name them")
+        form.addRow("AI naming model", self.model)
+        self.auto_names = QCheckBox("Give the new themes readable names")
         form.addRow(self.auto_names)
         outer.addLayout(form)
-        note = QLabel("A separate proposal is saved for review. Apply switches to the new analysis; "
-                      "Cancel keeps your selected analysis and all research decisions. "
-                      "Changing passage size or clustering settings opens Analysis Setup for fresh discovery.")
+        note = QLabel("The changes are saved separately for you to review. Applying them switches to the adjusted "
+                      "analysis; cancelling keeps your current one and all your coding. To change how documents are "
+                      "split, use Find themes again.")
         note.setWordWrap(True)
         outer.addWidget(note)
         self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Prepare proposal")
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Prepare changes")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         outer.addWidget(self.buttons)
@@ -96,7 +97,8 @@ class RefinementSetupDialog(QDialog):
         self.consequences.setText(OPERATIONS[operation][1])
         blocked = operation == "reduce" and self.source["settings"].analysis_method == "zero_shot"
         if blocked:
-            self.consequences.setText("Automatic reduction is disabled to protect predefined categories. Use an explicit theme merge in Research Workspace instead.")
+            self.consequences.setText("Combining themes is turned off when you started from your own list of themes, "
+                                      "so your themes stay as you wrote them. Merge themes yourself in Read & code instead.")
         self.target.setEnabled(operation == "reduce" and not blocked)
         self.keywords.set_enabled(operation in {"words", "reduce"})
         self.auto_names.setEnabled(operation in {"words", "reduce"})
@@ -122,7 +124,7 @@ class RefinementReviewDialog(QDialog):
         self.directory, self.proposal_id = directory, proposal_id
         self.applied = False
         self.review = review_proposal(directory, proposal_id)
-        self.setWindowTitle("Review proposed analysis")
+        self.setWindowTitle("Review the changes")
         self.resize(920, 720)
         outer = QVBoxLayout(self)
         scroll = QScrollArea()
@@ -134,23 +136,21 @@ class RefinementReviewDialog(QDialog):
         review = self.review
         summary = QLabel(f"{OPERATIONS[review['operation']][0]}\n"
             f"Themes: {review['old_theme_count']} → {review['new_theme_count']} · "
-            f"Uncategorized passages: {review['old_uncategorized']} → {review['new_uncategorized']}\n"
+            f"Not in any theme: {review['old_uncategorized']} → {review['new_uncategorized']} passages\n"
             f"Exact shared passages: {review['shared_passages']} · "
             f"New passage ranges: {review['new_passages']} · Earlier ranges absent: {review['retired_passages']}\n"
             f"With recommended identities, {review['changed_memberships']} shared passages change theme. "
             "Changing identity choices below also changes which decisions carry forward.")
         summary.setWordWrap(True)
         layout.addWidget(summary)
-        help_text = QLabel("Each row is a proposed theme. Reuse an earlier identity to carry its researcher name, "
-            "notes, accepted codings, exact-range rejections, and merge history forward. "
-            "Keep a new identity for a new concept. An earlier identity can be reused once. "
-            "Names of reused machine themes update globally; your names are protected. "
-            "All manual work remains saved even when its theme is absent from the new model. "
-            "An earlier theme shown as retired here remains available in its original analysis.")
+        help_text = QLabel("Each row is an adjusted theme. Match it to an earlier theme to carry that theme's name, "
+            "notes, coding and rejected passages forward, or keep it as a new theme. Each earlier theme can be "
+            "matched once. Names you gave themes are never replaced. Nothing you've done is lost: an earlier theme "
+            "that isn't matched stays in its original analysis.")
         help_text.setWordWrap(True)
         layout.addWidget(help_text)
         self.table = QTableWidget(len(review["themes"]), 4)
-        self.table.setHorizontalHeaderLabels(["Proposed theme", "Passages", "Carry earlier identity", "Evidence"])
+        self.table.setHorizontalHeaderLabels(["Adjusted theme", "Passages", "Match to earlier theme", "Shared passages"])
         self.choices = {}
         for row, item in enumerate(review["themes"]):
             for col, text in [(0, item["label"]), (1, str(item["count"]))]:
@@ -159,7 +159,7 @@ class RefinementReviewDialog(QDialog):
                 cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, col, cell)
             combo = QComboBox()
-            combo.addItem("Keep new theme identity", None)
+            combo.addItem("Keep as a new theme", None)
             for index, candidate in enumerate(item["candidates"]):
                 combo.addItem(f"{index+1}. {candidate['label']} · {candidate['shared']} shared", candidate["theme_id"])
             if item["recommended"]:
@@ -176,7 +176,7 @@ class RefinementReviewDialog(QDialog):
         self.table.resizeColumnsToContents()
         self.table.setMinimumHeight(210)
         layout.addWidget(self.table)
-        layout.addWidget(QLabel("Select a proposed theme row to inspect its passages and earlier memberships."))
+        layout.addWidget(QLabel("Click a theme to see its passages and which old themes they came from."))
         self.evidence = QPlainTextEdit()
         self.evidence.setReadOnly(True)
         self.evidence.setMinimumHeight(150)
@@ -190,7 +190,7 @@ class RefinementReviewDialog(QDialog):
             "\nDifferent passage sizes do not relocate exact-range rejections; earlier decisions stay saved for inspection.")
         decisions.setWordWrap(True)
         layout.addWidget(decisions)
-        self.confirm = QCheckBox("I reviewed the proposed groups and identity choices")
+        self.confirm = QCheckBox("I've checked the changes")
         layout.addWidget(self.confirm)
         self.error = QLabel()
         self.error.setWordWrap(True)
@@ -228,12 +228,14 @@ class RefinementReviewDialog(QDialog):
         unchanged = sum(next((c["shared"] for c in item["candidates"] if c["theme_id"] == mapping[item["theme_id"]]), 0)
                         for item in self.review["themes"])
         changed = self.review["shared_passages"] - unchanged
-        self.identity_summary.setText(f"With these identity choices, {changed} exact shared passages change theme.\n" + "New theme identities: " + (", ".join(names) or "None") +
-            "\nEarlier theme identities not reused: " + (", ".join(retired) or "None") +
-            "\nEarlier themes with no shared evidence also remain saved in the original analysis.")
+        self.identity_summary.setText(f"With these matches, {changed} passages move to a different theme.\n"
+            + "New themes: " + (", ".join(names) or "None")
+            + "\nEarlier themes not matched: " + (", ".join(retired) or "None")
+            + "\nThey stay saved in the original analysis.")
         duplicate = len(chosen) != len(carried)
-        self.error.setText("An earlier identity is selected more than once. Choose separate identities for split groups." if duplicate else
-                           "Research decisions changed; cancel and prepare a new proposal." if self.review["stale"] else "")
+        self.error.setText("An earlier theme is matched more than once. Keep one of them as a new theme." if duplicate else
+                           "Your coding changed since these were prepared; cancel and prepare them again."
+                           if self.review["stale"] else "")
         self.buttons.button(QDialogButtonBox.StandardButton.Apply).setEnabled(
             self.confirm.isChecked() and not duplicate and not self.review["stale"])
 
@@ -241,7 +243,7 @@ class RefinementReviewDialog(QDialog):
         try:
             apply_proposal(self.directory, self.proposal_id, self.mappings())
         except Exception as exc:
-            QMessageBox.warning(self, "Could not apply proposal", str(exc))
+            QMessageBox.warning(self, "Could not apply the changes", str(exc))
             return
         self.applied = True
         self.accept()
@@ -251,6 +253,6 @@ class RefinementReviewDialog(QDialog):
             try:
                 cancel_proposal(self.directory, self.proposal_id)
             except Exception as exc:
-                QMessageBox.warning(self, "Could not cancel proposal", str(exc))
+                QMessageBox.warning(self, "Could not cancel the changes", str(exc))
                 return
         super().reject()

@@ -4,17 +4,21 @@ from qualitative_themes.analysis.settings import ANALYSIS_METHODS
 from qualitative_themes.storage.database import connect
 
 ORIGIN_LABELS = {
-    'predefined': 'Predefined category',
-    'guided_discovery': 'Guided discovery',
-    'discovered': 'Discovered topic',
-    'uncategorized': 'Uncategorized',
-    'researcher': 'Researcher-created theme',
-    'earlier_model': 'Earlier model theme',
+    'predefined': 'From your own list of themes',
+    'guided_discovery': 'Found by the tool, nudged by your keywords',
+    'discovered': 'Found by the tool',
+    'uncategorized': 'Not in any theme',
+    'researcher': 'A theme you created',
+    'earlier_model': 'Found by the tool in an earlier analysis',
 }
 
 
+# Shown wherever an analysis would be named, when the researcher picks no analysis.
+NO_ANALYSIS_LABEL = 'My coding only (no analysis)'
+
+
 def method_label(settings, manual=False):
-    return 'Manual coding only' if manual else ANALYSIS_METHODS.get(settings.get('analysis_method', 'general'), 'Unknown method')
+    return NO_ANALYSIS_LABEL if manual else ANALYSIS_METHODS.get(settings.get('analysis_method', 'general'), 'Unknown method')
 
 
 def topic_provenance(settings, info, topic):
@@ -65,7 +69,7 @@ def theme_provenance(directory, theme_id, run_id=None):
 
 def method_summary(settings, info):
     """Multi-line description of the method used, for run details and exports."""
-    lines = ['Analysis method: ' + method_label(settings)]
+    lines = ['How themes were found: ' + method_label(settings)]
     method = settings.get('analysis_method', 'general')
     if method in {'guided', 'zero_shot'}:
         lines.append('Seed topics:' if method == 'guided' else 'Predefined topic descriptions:')
@@ -85,7 +89,7 @@ def method_summary(settings, info):
             if key in diagnostics:
                 lines.append(f'{label}: {diagnostics[key]}')
         if diagnostics.get('residual_discovery_skipped'):
-            lines.append('Unmatched discovery was skipped: too few passages; these remained Uncategorized.')
+            lines.append('Too few unmatched passages to look for more themes; they stayed in "Not in any theme".')
         names = diagnostics.get('unmatched_category_names', [])
         if names:
             lines.append('Categories with no initial matches: ' + ', '.join(names))

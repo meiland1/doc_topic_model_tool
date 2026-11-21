@@ -1,4 +1,4 @@
-"""Start screen: new/open/recent projects and the Local setup status panel."""
+"""Start screen: new/open/recent projects and the Setup status panel."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -9,6 +9,8 @@ from PySide6.QtWidgets import (QBoxLayout, QScrollArea, QCheckBox, QFrame, QGrid
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
 from qualitative_themes.runtime import app_settings, health
+from qualitative_themes.runtime.paths import missing_files_fix
+from qualitative_themes.gui import strings
 
 
 def _relative_day(stamp: str) -> str:
@@ -36,7 +38,7 @@ class SetupPanel(QFrame):
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(10)
         header = QHBoxLayout()
-        title = QLabel("Local setup")
+        title = QLabel("Setup")
         title.setObjectName("panelTitle")
         header.addWidget(title)
         header.addStretch()
@@ -55,8 +57,8 @@ class SetupPanel(QFrame):
         buttons = QHBoxLayout()
         self.repair_button = QPushButton("Check && repair")
         self.repair_button.clicked.connect(self.repair_requested)
-        self.add_model_button = QPushButton("Add naming model…")
-        self.add_model_button.setToolTip("Install a theme-naming model pack (.tmtpack) from a file. Works offline.")
+        self.add_model_button = QPushButton("Add theme-naming model…")
+        self.add_model_button.setToolTip("Add the theme-naming AI from a file (works offline).")
         self.add_model_button.clicked.connect(self.add_model_requested)
         buttons.addWidget(self.repair_button)
         buttons.addWidget(self.add_model_button)
@@ -94,7 +96,7 @@ class SetupPanel(QFrame):
         elif overall == "limited":
             self.notice.setText("Theme finding works. Theme names will use keywords until a naming model is added.")
         else:
-            self.notice.setText("Something is missing. Choose Check & repair; if that doesn't help, reinstall the app. "
+            self.notice.setText(f"Something is missing. Choose Check & repair; if that doesn't help, {missing_files_fix()}. "
                                 "Your projects are not affected.")
 
 
@@ -104,7 +106,6 @@ class Hub(QWidget):
     practice_requested = Signal()
     open_requested = Signal()
     restore_requested = Signal()
-    recovery_requested = Signal()
     recent_requested = Signal(str)
 
     def __init__(self, parent=None):
@@ -132,11 +133,11 @@ class Hub(QWidget):
         intro.setObjectName("quiet")
         left.addWidget(intro)
         actions = QHBoxLayout()
-        self.new_button = QPushButton("+  New project\nName it, add documents, done")
+        self.new_button = QPushButton("+  New project")
         self.new_button.setProperty("primary", True)
         self.new_button.setObjectName("hubAction")
         self.new_button.clicked.connect(self.new_requested)
-        self.open_button = QPushButton("Open project…\nBrowse to a project folder")
+        self.open_button = QPushButton(strings.OPEN_PROJECT)
         self.open_button.setObjectName("hubAction")
         self.open_button.clicked.connect(self.open_requested)
         for button in (self.new_button, self.open_button):
@@ -148,13 +149,10 @@ class Hub(QWidget):
         self.practice_button.setToolTip('Learn to read, code, and comment without setting up AI. Each start creates a fresh copy.')
         self.practice_button.clicked.connect(self.practice_requested)
         left.addWidget(self.practice_button)
-        self.restore_button = QPushButton("Restore a project backup…")
+        self.restore_button = QPushButton(strings.RESTORE_PROJECT + "  ·  from a safety copy or a backup")
         self.restore_button.clicked.connect(self.restore_requested)
         left.addWidget(self.restore_button)
-        self.recovery_button = QPushButton("Recover a recent project…")
-        self.recovery_button.clicked.connect(self.recovery_requested)
-        left.addWidget(self.recovery_button)
-        recent_label = QLabel("RECENT PROJECTS")
+        recent_label = QLabel("Recent projects")
         recent_label.setObjectName("sectionLabel")
         left.addWidget(recent_label)
         self.recent = QListWidget()
@@ -169,7 +167,7 @@ class Hub(QWidget):
         self.readiness.setWordWrap(True)
         self.readiness.setAccessibleName('Topic finding and optional naming readiness')
         right.addWidget(self.readiness)
-        self.advanced_toggle = QCheckBox('Advanced local setup')
+        self.advanced_toggle = QCheckBox('Setup details')
         right.addWidget(self.advanced_toggle)
         self.setup = SetupPanel()
         self.setup.hide()
@@ -214,6 +212,6 @@ class Hub(QWidget):
         self.setup.show_checks(checks, busy_message)
         state = health.summary(checks)
         self.readiness.setText(busy_message or (
-            'Ready to find topics. Optional theme naming is installed.' if state == 'ready' else
-            'Ready to find topics. Optional naming is not fully set up; keyword names are available.' if state == 'limited' else
-            'Topic-finding setup needs attention. Open Advanced local setup to check and repair. Manual reading, coding, and practice remain available.'))
+            'Ready. Theme finding and theme naming work offline on this computer.' if state == 'ready' else
+            'Ready to find themes. Theme naming isn\'t set up, so themes will keep keyword names.' if state == 'limited' else
+            'Theme finding needs attention. Open Setup details to check and repair. Reading, coding and practice still work.'))

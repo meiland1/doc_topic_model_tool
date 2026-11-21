@@ -107,9 +107,9 @@ class VisualizationTests(unittest.TestCase):
         before = self.snapshot()
         result = build_visualizations(self.directory, run, embedding_provider=unavailable, model_factory=lambda vectorizer: Model())
         self.assertIn('No local weights', result['messages']['map'])
-        self.assertIn('Only Uncategorized', result['messages']['heatmap'])
+        self.assertIn('Not in any theme', result['messages']['heatmap'])
         self.assertIn('at least two', result['messages']['hierarchy'])
-        self.assertIn('Outside hierarchy: Uncategorized', result['tree'])
+        self.assertIn('Not in the tree: Not in any theme', result['tree'])
         self.assertEqual(self.snapshot(), before)
 
     def test_cached_embeddings_do_not_load_or_download_a_model(self):

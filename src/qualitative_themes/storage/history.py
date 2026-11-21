@@ -3,15 +3,17 @@ from datetime import datetime, timezone
 import json
 from uuid import uuid4
 
+from qualitative_themes.analysis.segment import UNIT_LABELS
 from qualitative_themes.storage.database import connect
-from qualitative_themes.storage.provenance import method_summary, method_label
+from qualitative_themes.storage.provenance import NO_ANALYSIS_LABEL, method_summary, method_label
 
 
 def analysis_title(settings_json, completed_at):
-    """Display name for a run: the researcher's name if set, otherwise date + passage size."""
+    """Display name for a run: the researcher's name if set, otherwise date + how documents were split."""
     settings = json.loads(settings_json) if isinstance(settings_json, str) else settings_json
+    unit = settings.get('analysis_unit', '')
     return settings.get("display_name") or (
-        f"Analysis {(completed_at or '')[:19].replace('T', ' ')} · {settings.get('analysis_unit', 'Passages')}")
+        f"Analysis {(completed_at or '')[:19].replace('T', ' ')} · {UNIT_LABELS.get(unit, unit or 'Passages')}")
 
 
 def rename_analysis(directory, run_id, name):
@@ -21,8 +23,8 @@ def rename_analysis(directory, run_id, name):
     name = name.strip()
     if len(name) > 120 or any(ord(char) < 32 for char in name):
         raise ValueError("Use a single-line analysis name of at most 120 characters.")
-    if name.casefold() == "manual coding only":
-        raise ValueError("Choose a name other than Manual coding only.")
+    if name.casefold() == NO_ANALYSIS_LABEL.casefold():
+        raise ValueError(f"Choose a name other than {NO_ANALYSIS_LABEL}.")
     with connect(directory) as conn:
         row = conn.execute("SELECT settings_json FROM analysis_runs WHERE id=? AND status='completed'", (run_id,)).fetchone()
         if not row:
@@ -84,7 +86,7 @@ def analysis_details(directory, run_id):
     lines = [analysis_title(settings, completed or started), f"Status: {status}",
              f"Started (UTC): {started}", f"Completed (UTC): {completed or 'Not completed'}",
              "Documents: " + (", ".join(documents) or "None recorded"), f"Passages: {segments}",
-             f"Passage size: {settings.get('analysis_unit', 'Not recorded')}"]
+             f"How documents were split: {UNIT_LABELS.get(settings.get('analysis_unit'), 'Not recorded')}"]
     lines.append(method_summary(settings, info))
     segmentation = info.get('segmentation', {})
     if segmentation:
@@ -99,13 +101,13 @@ def analysis_details(directory, run_id):
     lines.append('Truncation permission: ' + ('Allowed' if settings.get('allow_truncation') else 'Not allowed'))
     if parent:
         lines.append("Refined from: " + analysis_title(parent[0], parent[1] or parent[2]))
-    for key, label in [("analysis_style", "Discovery style"), ("min_topic_size", "Minimum evidence"),
+    for key, label in [("analysis_style", "Theme size"), ("min_topic_size", "A theme needs at least (passages)"),
                        ("requested_theme_count", "Requested theme goal"), ("ollama_model", "Local naming model")]:
         lines.append(f"{label}: {settings.get(key) if settings.get(key) is not None else 'Automatic / not set'}")
     lines += ["Ignored keyword words: " + (", ".join(settings.get("ignored_words", [])) or "None"),
-              "Keyword phrases: " + ("Words only" if settings.get("ngram_range") == [1, 1] else "Words and two-word phrases"),
+              "Two-word keywords: " + ("No" if settings.get("ngram_range") == [1, 1] else "Yes"),
               f"Originally produced themes: {info.get('actual_theme_count', 'Not recorded')}",
-              f"Originally Uncategorized passages: {info.get('uncategorized_passage_count', 'Not recorded')}"]
+              f"Passages not in any theme at first: {info.get('uncategorized_passage_count', 'Not recorded')}"]
     embedding = info.get("embedding_identity") or info.get("source_model_identity") or {}
     lines.append("Embedding model: " + (embedding.get("model") or settings.get("embedding_model") or "Not recorded"))
     if embedding.get("revision") or settings.get("embedding_revision"):

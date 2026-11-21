@@ -34,7 +34,7 @@ def zero_shot_partition(passages, embeddings, category_embeddings, settings, dis
 
     Topic ids 0..N-1 are the predefined topics in order; discovered topics come
     after them. Discovery is skipped when too few passages are unmatched; those
-    stay -1 (Uncategorized). Returns (assignments, model_info additions).
+    stay -1 ("Not in any theme"). Returns (assignments, model_info additions).
     """
     import numpy as np
     assignments, similarities = match_predefined(embeddings, category_embeddings, settings.zeroshot_min_similarity)

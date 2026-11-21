@@ -13,23 +13,29 @@ from qualitative_themes.analysis.speakers import count_interviewer_turns, detect
 from qualitative_themes.analysis.topics import prepare_passages
 from qualitative_themes.storage.documents import get_document
 
-UNIT_BUTTONS = {"Automatic passages": "Auto", "Interview passages": "Interview",
-                "Paragraphs": "Paragraph", "Whole document": "Whole doc"}
+UNIT_BUTTONS = {"Automatic passages": "Automatic (recommended)", "Interview passages": "By speaker (interviews)",
+                "Paragraphs": "By paragraph", "Whole document": "Whole document"}
 
 
 UNIT_HELP = {
-    "Automatic passages": "Keep sentences and paragraphs together where possible; fit every passage within the local model's token limit.",
-    "Interview passages": "Keep different speakers separate and split long answers within the model limit. Uncertain speaker layouts use Auto and keep all text; review the preview.",
-    "Paragraphs": "Use each extracted paragraph as a passage; length varies with the source.",
-    "Whole document": "One passage per document; may hide smaller ideas and truncate long text.",
+    "Automatic passages": "Keeps sentences and paragraphs together, and keeps passages short enough for the tool to read in full.",
+    "Interview passages": ("Each speaker turn becomes its own passage; very long answers are split. "
+                           "Where speaker labels aren't clear, Automatic is used and all text is kept; check the preview."),
+    "Paragraphs": "Each paragraph becomes one passage, however long or short it is.",
+    "Whole document": "Each document is one passage. Smaller ideas can get lost, and long documents may be cut short.",
 }
 
 
+from qualitative_themes.gui import strings
 from qualitative_themes.gui.worker import WorkerThread
 from qualitative_themes.gui.passage_preview import PassagePreviewMixin
 from qualitative_themes.gui.settings_form import KeywordOptions, naming_model_choice, refill_naming_models
 
-NO_MODEL_LABEL = "Keyword fallback (no model selected)"
+NO_MODEL_LABEL = "Don't name them (use keywords)"
+
+# Theme size choices: (stored preset name, what the researcher sees).
+THEME_SIZES = [("Broad", "Fewer, broader"), ("Balanced", "Balanced"),
+               ("Detailed", "More, specific"), ("Exploratory", "Many small (exploratory)")]
 
 
 class InspectionWorker(WorkerThread):
@@ -97,7 +103,7 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
         self.summary = None
         self.passages = []
         self.preview_index = -1
-        self.setWindowTitle("Analysis Setup")
+        self.setWindowTitle(strings.FIND_THEMES)
         self.resize(1180, 760)
         outer = QVBoxLayout(self)
         body = QHBoxLayout()
@@ -110,7 +116,7 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
         scroll.setWidget(content)
         body.addWidget(scroll, 1)
         body.addWidget(self.build_preview_pane(), 1)
-        layout.addWidget(QLabel("Analyze these documents together"))
+        layout.addWidget(QLabel("Themes are found across these documents together"))
         selected = QListWidget()
         selected.setAccessibleName('Selected documents for analysis')
         selected.addItems([name for _, name in documents])
@@ -122,27 +128,29 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
         for key, label in ANALYSIS_METHODS.items():
             self.method.addItem(label, key)
         self.method.setCurrentIndex(max(0, self.method.findData(self.initial.analysis_method)))
-        form.addRow("Analysis method", self.method)
+        form.addRow("How should themes be found?", self.method)
         self.method_help = QLabel()
         self.method_help.setWordWrap(True)
         form.addRow(self.method_help)
         self.topic_editor = QPlainTextEdit()
         self.topic_editor.setTabChangesFocus(True)
-        self.topic_editor.setAccessibleName('Predefined topics')
+        self.topic_editor.setAccessibleName('Your themes')
         self.topic_editor.setMaximumHeight(130)
         self.topic_editor.setPlainText("\n".join(f"{name} | {text}" for name, text in self.initial.topic_definitions))
-        form.addRow("Predefined topics", self.topic_editor)
+        form.addRow("Your themes", self.topic_editor)
         self.similarity = QDoubleSpinBox()
         self.similarity.setRange(0, 1)
         self.similarity.setDecimals(2)
         self.similarity.setSingleStep(0.05)
         self.similarity.setValue(self.initial.zeroshot_min_similarity)
-        self.similarity.setToolTip("Semantic similarity, not confidence. Calibrate using reviewed passages.")
-        form.addRow("Minimum similarity", self.similarity)
+        self.similarity.setToolTip("Higher = only close matches. Lower = more passages, some less related. "
+                                   "Try a few values and check the results.")
+        form.addRow("How closely a passage must match", self.similarity)
         self.style = QComboBox()
-        self.style.addItems(PRESETS)
-        self.style.setCurrentText(self.initial.analysis_style)
-        form.addRow("Analysis style", self.style)
+        for key, label in THEME_SIZES:
+            self.style.addItem(label, key)
+        self.set_style(self.initial.analysis_style)
+        form.addRow("Theme size", self.style)
         self.style_help = QLabel()
         self.style_help.setWordWrap(True)
         form.addRow(self.style_help)
@@ -166,16 +174,17 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
             self.unit_group.addButton(button)
             unit_buttons.addWidget(button, index // 4, index % 4)
         self.unit.currentTextChanged.connect(self.sync_unit_buttons)
-        form.addRow("Passage size", unit_row)
-        self.allow_truncation = QCheckBox("Allow only the start of oversized passages")
+        form.addRow("How to split documents", unit_row)
+        self.allow_truncation = QCheckBox("Allow very long passages (only the beginning is used)")
         self.allow_truncation.setChecked(self.initial.allow_truncation)
-        self.allow_truncation.setToolTip('Keeps the selected passage boundaries, but text beyond the model limit does not contribute to its embedding. This choice is saved with the analysis.')
+        self.allow_truncation.setToolTip("Keeps your passages as they are, but the tool only reads the first part of a very "
+                                         "long one when finding themes. This choice is saved with the analysis.")
         form.addRow(self.allow_truncation)
         self._texts = {doc: get_document(self.directory, doc)[1] for doc, _ in documents}
         self.speakers = detect_speakers(self._texts.values())
-        self.exclude_interviewer = QCheckBox("Leave out interviewer turns")
-        self.exclude_interviewer.setToolTip("Interviewer prompts tend to form their own themes. They stay visible in "
-                                            "the documents; they are only left out of theme finding.")
+        self.exclude_interviewer = QCheckBox("Ignore the interviewer's questions")
+        self.exclude_interviewer.setToolTip("Interviewer questions tend to form their own themes. They stay visible in "
+                                            "the documents; they're only left out when finding themes.")
         self.speaker_list = QListWidget()
         self.speaker_list.setAccessibleName("Speaker labels treated as the interviewer")
         self.speaker_list.setMaximumHeight(130)
@@ -188,7 +197,7 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
             chosen = row["key"] in saved if saved else row["suggested"]
             item.setCheckState(Qt.CheckState.Checked if chosen else Qt.CheckState.Unchecked)
             self.speaker_list.addItem(item)
-        self.speaker_help = QLabel("Tick every label used for the interviewer (e.g. Interviewer, Interviewer1, Q).")
+        self.speaker_help = QLabel("Which speaker labels are the interviewer? (e.g. Interviewer, Q)")
         self.speaker_help.setObjectName("quiet")
         self.speaker_help.setWordWrap(True)
         if self.speakers:
@@ -211,26 +220,26 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
         self.unit_help.setWordWrap(True)
         form.addRow(self.unit_help)
         self.number_mode = QComboBox()
-        self.number_mode.addItems(["Let model decide", "Aim for approximately N"])
+        self.number_mode.addItems(["Let the tool decide", "About N"])
         self.number_mode.setCurrentIndex(int(self.initial.requested_theme_count is not None))
         form.addRow("Number of themes", self.number_mode)
         self.number = QSpinBox()
         self.number.setRange(1, 1000)
         self.number.setValue(self.initial.requested_theme_count or 5)
-        form.addRow("Approximate goal", self.number)
-        explanation = QLabel("A reduction goal for discovered themes, excluding Uncategorized. "
-                             "It cannot create additional themes or guarantee an exact count. "
-                             "Choose Detailed/Exploratory for a new discovery run with smaller groups.")
+        form.addRow("About how many", self.number)
+        explanation = QLabel("The tool combines similar themes until there are about this many (not counting "
+                             "\"Not in any theme\"). It can't make more themes than it finds; for more, smaller themes "
+                             "choose a smaller theme size.")
         explanation.setWordWrap(True)
         form.addRow(explanation)
-        self.auto_names = QCheckBox("Automatically name themes")
+        self.auto_names = QCheckBox("Give themes readable names (AI, on this computer)")
         self.auto_names.setChecked(self.initial.name_themes)
         form.addRow(self.auto_names)
         self.naming_summary = QLabel()
         self.naming_summary.setWordWrap(True)
         form.addRow(self.naming_summary)
         layout.addLayout(form)
-        self.advanced_toggle = QCheckBox("Advanced analysis and local naming setup")
+        self.advanced_toggle = QCheckBox("More options")
         layout.addWidget(self.advanced_toggle)
         self.advanced = QWidget()
         advanced = QFormLayout(self.advanced)
@@ -238,23 +247,25 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
         self.minimum = QSpinBox()
         self.minimum.setRange(2, 10000)
         self.minimum.setValue(self.initial.min_topic_size)
-        self.minimum.setToolTip("Minimum passages supporting a discovered group; changing this overrides the style default.")
-        advanced.addRow("Minimum evidence (passages)", self.minimum)
+        self.minimum.setToolTip("Fewer than this and the passages go to \"Not in any theme\". "
+                                "Changing this overrides the theme size.")
+        self.minimum.setSuffix(" passages")
+        advanced.addRow("A theme needs at least", self.minimum)
         self.keywords = KeywordOptions(advanced, self.initial)
         self.ignored, self.phrases = self.keywords.ignored, self.keywords.phrases
         self.model = naming_model_choice(models, self.initial.ollama_model, fallback_label=NO_MODEL_LABEL,
                                          unverified_suffix=" (refresh to verify)")
-        advanced.addRow("Optional naming model", self.model)
-        self.refresh_models = QPushButton("Refresh installed models")
+        advanced.addRow("Name themes with", self.model)
+        self.refresh_models = QPushButton("Refresh list")
         self.refresh_models.clicked.connect(self.fetch_models)
         advanced.addRow(self.refresh_models)
-        self.model_status = QLabel("Refresh checks your local Ollama service; naming failures use keywords.")
+        self.model_status = QLabel("If naming fails, themes keep keyword names.")
         self.model_status.setWordWrap(True)
         advanced.addRow(self.model_status)
         self.advanced.setVisible(False)
         self.advanced_toggle.toggled.connect(self.advanced.setVisible)
         layout.addWidget(self.advanced)
-        defaults = QPushButton("Restore Recommended Defaults")
+        defaults = QPushButton("Reset to recommended settings")
         defaults.clicked.connect(self.restore_defaults)
         layout.addWidget(defaults)
         self.work = QLabel("Counting selected passages…")
@@ -264,7 +275,7 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
         self.validation.setWordWrap(True)
         layout.addWidget(self.validation)
         self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Analyze")
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText(strings.FIND_THEMES)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         outer.addWidget(self.buttons)
@@ -284,7 +295,7 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
     def settings(self):
         # Preserve the configured internal embedding identity and execution seed.
         """AnalysisSettings built from the current widgets (embedding model and seed keep their defaults)."""
-        base = preset_settings(self.style.currentText())
+        base = preset_settings(self.style_key())
         return replace(base, analysis_method=self.method.currentData(),
             topic_definitions=parse_topic_definitions(self.topic_editor.toPlainText()) if self.method.currentData() != "general" else (),
             zeroshot_min_similarity=self.similarity.value(), embedding_model=self.initial.embedding_model,
@@ -297,8 +308,15 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
             exclude_interviewer=self.exclude_interviewer.isChecked() and bool(self.chosen_labels()),
             interviewer_labels=tuple(self.chosen_labels()))
 
+    def style_key(self):
+        """The stored preset name (Broad/Balanced/Detailed/Exploratory) for the chosen theme size."""
+        return self.style.currentData()
+
+    def set_style(self, key):
+        self.style.setCurrentIndex(max(0, self.style.findData(key)))
+
     def style_changed(self, _style):
-        self.minimum.setValue(PRESETS[self.style.currentText()]["min_topic_size"])
+        self.minimum.setValue(PRESETS[self.style_key()]["min_topic_size"])
         self.update_validation()
 
     def restore_defaults(self):
@@ -306,7 +324,7 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
         self.method.setCurrentIndex(0)
         self.topic_editor.clear()
         self.similarity.setValue(0.7)
-        self.style.setCurrentText("Balanced")
+        self.set_style("Balanced")
         self.minimum.setValue(5)
         self.unit.setCurrentText("Automatic passages")
         self.allow_truncation.setChecked(False)
@@ -380,8 +398,8 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
         labels = self.chosen_labels()
         self.interviewer_turns = count_interviewer_turns(self._texts.values(), labels) if labels else 0
         if self.speakers:
-            self.exclude_interviewer.setText(f"Leave out interviewer turns ({self.interviewer_turns:,} turns)"
-                                             if labels else "Leave out interviewer turns (choose labels below)")
+            self.exclude_interviewer.setText(f"Ignore the interviewer's questions ({self.interviewer_turns:,} turns)"
+                                             if labels else "Ignore the interviewer's questions (choose labels below)")
 
     def speakers_changed(self, _item=None):
         self.update_interviewer_count()
@@ -409,9 +427,9 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
 
     def update_validation(self, *_args):
         self.naming_summary.setText(
-            'Topic finding uses the bundled model. Optional theme naming is off.' if not self.auto_names.isChecked() else
-            ('Optional naming model: ' + str(self.model.currentData()) + '. Change it in Advanced setup.'
-             if self.model.currentData() else 'No optional naming model selected. Themes will use keywords; choose a model in Advanced setup if desired.'))
+            'Themes will keep keyword names.' if not self.auto_names.isChecked() else
+            ('Naming with ' + str(self.model.currentData()) + '. Change it under More options.'
+             if self.model.currentData() else 'No naming model chosen, so themes will keep keyword names. Choose one under More options.'))
         self.allow_truncation.setVisible(self.unit.currentText() not in TOKEN_SAFE_UNITS)
         method = self.method.currentData()
         self.topic_editor.setEnabled(method != "general")
@@ -420,13 +438,16 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
         if method == "zero_shot":
             self.number_mode.setCurrentIndex(0)
         help_text = {
-            "general": "Discover recurring themes without predefined topics.",
-            "guided": "Steer discovery with comma-separated seed words or phrases. One line: Healthcare access | clinic, medication, insurance",
-            "zero_shot": "Assign each passage to its best matching topic above the similarity threshold, then discover other groups. Supplied names are preserved. One line: Healthcare access | Barriers to obtaining treatment and medication",
+            "general": "Best for a first look at your data.",
+            "guided": ("You list words for themes you expect; the tool still finds others. "
+                       "For example: Healthcare access | clinic, medication, insurance"),
+            "zero_shot": ("Like working from a codebook: each passage goes to the theme it matches best, then the tool "
+                          "looks for other themes in what's left. Your theme names are kept. "
+                          "For example: Healthcare access | Barriers to getting treatment and medication"),
         }
         self.method_help.setText(help_text[method])
-        self.topic_editor.setPlaceholderText("Topic name | seed words or descriptive matching text (one topic per line)")
-        self.style_help.setText(STYLE_HELP[self.style.currentText()])
+        self.topic_editor.setPlaceholderText("One theme per line:  Theme name | words or a short description")
+        self.style_help.setText(STYLE_HELP[self.style_key()])
         self.unit_help.setText(UNIT_HELP[self.unit.currentText()])
         self.number.setEnabled(bool(self.number_mode.currentIndex()))
         valid = False
@@ -434,16 +455,17 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
             settings = self.settings()
             if self.summary is not None:
                 if self.summary.get('segmentation', {}).get('oversized', 0) and not settings.allow_truncation:
-                    raise ValueError('Some passages exceed the model limit. Choose Auto, or explicitly allow truncation above.')
+                    raise ValueError('Some passages are too long for the tool to read in full. Choose Automatic, '
+                                     'or tick "Allow very long passages" above.')
                 validate_settings(settings, self.summary["count"])
-                ready = ("Ready. Naming will use keyword fallback if the selected local model is unavailable."
-                         if settings.name_themes else "Ready to analyze.")
+                ready = ("Ready. If naming fails, themes keep keyword names."
+                         if settings.name_themes else "Ready to find themes.")
                 warning = small_corpus_warning(settings, self.summary["count"])
                 if self.summary['count'] > 5000:
-                    warning = (warning + '\n' if warning else '') + 'Large analysis: more than 5,000 passages can be slow. '
+                    warning = (warning + '\n' if warning else '') + 'More than 5,000 passages can be slow. '
                     warning += 'Select fewer documents, or choose Paragraphs.'
                 if settings.name_themes:
-                    warning = (warning + '\n' if warning else '') + 'Automatic naming is skipped above 50 topics. Saved keyword names remain available.'
+                    warning = (warning + '\n' if warning else '') + 'Naming is skipped above 100 themes; they keep keyword names.'
                 self.validation.setText(ready + ("\n" + warning if warning else ""))
                 valid = True
         except ValueError as exc:
@@ -455,16 +477,16 @@ class AnalysisSetupDialog(PassagePreviewMixin, QDialog):
             return
         self._models_worker = ModelListWorker(self)
         self._models_worker.result.connect(self.models_ready)
-        self._models_worker.failed.connect(lambda message: self.model_status.setText("Local Ollama unavailable; keywords remain available. " + message))
+        self._models_worker.failed.connect(lambda message: self.model_status.setText("The naming engine isn't available; themes will keep keyword names. " + message))
         self._models_worker.finished.connect(self.models_finished)
         self.refresh_models.setEnabled(False)
-        self.model_status.setText("Checking local Ollama…")
+        self.model_status.setText("Checking which naming models are installed…")
         self.update_validation()
         self._models_worker.start()
 
     def models_ready(self, models):
         refill_naming_models(self.model, [row["name"] for row in models], fallback_label=NO_MODEL_LABEL)
-        self.model_status.setText(f"{len(models)} local model(s) found.")
+        self.model_status.setText(f"{len(models)} naming model(s) installed.")
 
     def models_finished(self):
         if self._models_worker is None:

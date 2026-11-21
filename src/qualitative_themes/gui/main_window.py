@@ -29,12 +29,14 @@ from qualitative_themes.gui.local_setup import LocalSetupMixin
 from qualitative_themes.gui.project_session import ProjectSessionMixin
 from qualitative_themes.gui.tasks import TasksMixin
 from qualitative_themes.gui.workers import ImportWorker
+from qualitative_themes.gui import strings
+from qualitative_themes.gui.menus import build_menus
 
 
 class MainWindow(ProjectSessionMixin, DocumentsPageMixin, LocalSetupMixin, TasksMixin, QMainWindow):
     """Top-level window: start screen (Hub) and the project page with its tabs.
 
-    Tabs: Documents, Overview, Research Workspace, Visualizations, Project guide.
+    Tabs: Documents & analysis, Themes, Read & code, Charts, Help.
     The window owns all background work. Only one long task runs at a time
     (stored in self._analysis_worker, which also holds visualization, export
     and refinement workers); `busy` is what every action checks first.
@@ -52,7 +54,6 @@ class MainWindow(ProjectSessionMixin, DocumentsPageMixin, LocalSetupMixin, Tasks
         self._ollama_worker = None
         self.analysis_settings = AnalysisSettings()
         self._close_after_analysis = False
-        self._has_removed = False
         self.setWindowTitle("Topic Model Tool")
         self.resize(1200, 850)
         from PySide6.QtWidgets import QStackedWidget
@@ -63,7 +64,7 @@ class MainWindow(ProjectSessionMixin, DocumentsPageMixin, LocalSetupMixin, Tasks
         self.hub.new_requested.connect(self.create)
         self.hub.practice_requested.connect(self.start_practice)
         self.hub.open_requested.connect(self.open)
-        self.hub.restore_requested.connect(self.restore_project_backup)
+        self.hub.restore_requested.connect(self.restore_project)
         self.hub.recent_requested.connect(self.open_recent)
         self.hub.setup.repair_requested.connect(self.repair_setup)
         self.hub.setup.add_model_requested.connect(self.add_model_pack)
@@ -102,21 +103,19 @@ class MainWindow(ProjectSessionMixin, DocumentsPageMixin, LocalSetupMixin, Tasks
         # Tool Navigation tabs
         documents_tab = QWidget()
         tab_layout = QVBoxLayout(documents_tab)
-        self.tabs.addTab(documents_tab, "Documents")
+        self.tabs.addTab(documents_tab, strings.TAB_DOCUMENTS)
         from qualitative_themes.gui.overview import OverviewTab
         self.overview = OverviewTab()
         self.overview.start_reading.connect(self.open_guided_reading)
         self.overview.guided_reading.connect(lambda: self.open_guided_reading(None))
         self.overview.open_cell.connect(self.open_overview_cell)
-        self.tabs.addTab(self.overview, "Overview")
+        self.tabs.addTab(self.overview, strings.TAB_THEMES)
         self.workspace = CodingWorkspace()
-        self.tabs.addTab(self.workspace, "Research Workspace")
+        self.tabs.addTab(self.workspace, strings.TAB_READ_CODE)
         self.workspace.run_choice.currentIndexChanged.connect(self.sync_overview_run)
         self.workspace.search_requested.connect(self.open_search)
-        from PySide6.QtGui import QKeySequence, QShortcut
-        QShortcut(QKeySequence("Ctrl+Shift+F"), self, activated=self.open_search)
         self.visualizations = VisualizationTab()
-        self.tabs.addTab(self.visualizations, "Visualizations")
+        self.tabs.addTab(self.visualizations, strings.TAB_CHARTS)
         self.visualizations.build_requested.connect(self.start_visualizations)
         self.visualizations.cancel_requested.connect(self.cancel_analysis)
         self.visualizations.evidence_requested.connect(self.open_visualization_evidence)
@@ -124,17 +123,11 @@ class MainWindow(ProjectSessionMixin, DocumentsPageMixin, LocalSetupMixin, Tasks
         from qualitative_themes.gui.project_guide import ProjectGuide
         self.project_guide = ProjectGuide()
         self.project_guide.action_requested.connect(self.guide_action)
-        self.tabs.addTab(self.project_guide, 'Project guide')
+        self.tabs.addTab(self.project_guide, strings.TAB_HELP)
         actions = QHBoxLayout()
 
-        # Buttons for creating/opening projects and importing documents
-        create = QPushButton("Create Project")
-        create.clicked.connect(self.create)
-        open_button = QPushButton("Open Project")
-        open_button.clicked.connect(self.open)
-        actions.addWidget(create)
-        actions.addWidget(open_button)
-        self.import_button = QPushButton("Import Documents")
+        # Creating and opening projects are in the File menu; only adding documents stays here.
+        self.import_button = QPushButton(strings.ADD_DOCUMENTS)
         self.import_button.setEnabled(False)
         self.import_button.clicked.connect(self.import_files)
         actions.addWidget(self.import_button)
@@ -144,7 +137,7 @@ class MainWindow(ProjectSessionMixin, DocumentsPageMixin, LocalSetupMixin, Tasks
 
         # Buttons for running an analysis
         analysis_actions = QHBoxLayout()
-        self.analyze_button = QPushButton("Analyze selected documents")
+        self.analyze_button = QPushButton("▶  " + strings.FIND_THEMES)
         self.analyze_button.clicked.connect(self.start_analysis)
         self.analyze_button.setProperty("primary", True)
         self.analyze_button.setEnabled(False)
@@ -167,8 +160,6 @@ class MainWindow(ProjectSessionMixin, DocumentsPageMixin, LocalSetupMixin, Tasks
         self.workspace.refine_button.clicked.connect(lambda: self.start_refinement())
         self.workspace.review_proposal_button.clicked.connect(self.review_pending_refinement)
         self.workspace.history_button.clicked.connect(self.show_analysis_history)
-        self.workspace.export_codebook_button.clicked.connect(lambda: self.start_research_export("codebook"))
-        self.workspace.export_passages_button.clicked.connect(lambda: self.start_research_export("passages"))
         self.contents = QSplitter()
 
         # Project Document file viewer/selector
@@ -177,35 +168,31 @@ class MainWindow(ProjectSessionMixin, DocumentsPageMixin, LocalSetupMixin, Tasks
         left_lay.addWidget(QLabel("Documents"))
         self.document_list = QListWidget()
         self.document_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
-        self.document_list.setToolTip("Use Ctrl/Shift to select documents. Analyze fits one model across all selected documents.")
+        self.document_list.setToolTip("Select the documents to include. Themes are found across all selected documents together.")
         self.document_list.currentItemChanged.connect(self.show_document)
         self.document_list.itemSelectionChanged.connect(self.update_document_actions)
         left_lay.addWidget(self.document_list)
         selection_actions = QHBoxLayout()
-        self.select_all_documents_button = QPushButton("Select All")
+        self.select_all_documents_button = QPushButton("Select all")
         self.select_all_documents_button.setEnabled(False)
-        self.select_all_documents_button.setToolTip("Select every available document for a single combined analysis.")
+        self.select_all_documents_button.setToolTip("Select every document, to find themes across all of them together.")
         self.select_all_documents_button.clicked.connect(self.document_list.selectAll)
         selection_actions.addWidget(self.select_all_documents_button)
-        self.clear_document_selection_button = QPushButton("Clear Selection")
+        self.clear_document_selection_button = QPushButton("Select none")
         self.clear_document_selection_button.setEnabled(False)
         self.clear_document_selection_button.clicked.connect(self.document_list.clearSelection)
         selection_actions.addWidget(self.clear_document_selection_button)
         left_lay.addLayout(selection_actions)
         self.document_selection_count = QLabel("0 of 0 documents selected")
         left_lay.addWidget(self.document_selection_count)
-        self.remove_documents_button = QPushButton("Remove selected documents")
+        self.remove_documents_button = QPushButton("Remove from project…")
         self.remove_documents_button.setEnabled(False)
         self.remove_documents_button.clicked.connect(self.remove_selected_documents)
         left_lay.addWidget(self.remove_documents_button)
-        self.restore_documents_button = QPushButton("Restore removed documents…")
-        self.restore_documents_button.setEnabled(False)
-        self.restore_documents_button.clicked.connect(self.restore_removed_documents)
-        left_lay.addWidget(self.restore_documents_button)
         self.contents.addWidget(left)
         right = QWidget()
         right_lay = QVBoxLayout(right)
-        self.preview_title = QLabel("Import documents to preview extracted text.")
+        self.preview_title = QLabel("Add documents to see their text here.")
         right_lay.addWidget(self.preview_title)
 
         # Extracted text of the current document
@@ -224,12 +211,7 @@ class MainWindow(ProjectSessionMixin, DocumentsPageMixin, LocalSetupMixin, Tasks
         tab_layout.addWidget(self.import_log)
         self.hub.refresh_setup()
 
-        project_menu = self.menuBar().addMenu("Project")
-        self.backup_action = project_menu.addAction("Back up project…", self.back_up_project)
-        self.backup_action.setEnabled(False)
-        project_menu.addAction("Restore project backup…", self.restore_project_backup)
-        from qualitative_themes.gui.recovery import RecoveryController
-        self.recovery = RecoveryController(self, project_menu)
+        build_menus(self)
 
 
     # Functions
@@ -238,6 +220,13 @@ class MainWindow(ProjectSessionMixin, DocumentsPageMixin, LocalSetupMixin, Tasks
     def busy(self) -> bool:
         """True while any background task runs; every action checks this one flag."""
         return bool(self._analysis_worker or self._worker or self._ollama_worker)
+
+    def run_in_workspace(self, method):
+        """Show the Read & code tab, then call `method` (Edit menu items act there)."""
+        if self.project is None:
+            return
+        self.tabs.setCurrentWidget(self.workspace)
+        method()
 
     def blocked_by_task(self, action: str) -> bool:
         """True (after telling the researcher why) if a background task is running.
