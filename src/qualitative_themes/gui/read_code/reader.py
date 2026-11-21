@@ -6,9 +6,8 @@ state documented there and are not meant to be used on their own.
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QTextCharFormat, QTextCursor, QUndoStack
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QListWidget, QPushButton,
-                               QTextEdit, QStackedWidget, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QGridLayout, QHBoxLayout, QLabel, QListWidget,
+                               QPushButton, QStackedWidget, QTextEdit, QToolButton, QVBoxLayout, QWidget)
 
 from qualitative_themes.domain.text_coordinates import TextCoordinates
 from qualitative_themes.storage.coding import (assignment_origin, analysis_document_ids)
@@ -22,49 +21,67 @@ from qualitative_themes.analysis.topics import UNGROUPED_LABEL
 
 class ReaderMixin:
     def _build_reader_panel(self, splitter):
-        """Middle panel: document picker, passage navigation, find bar, viewer and coding buttons."""
-        # Document viewer header navigates passages within documents
+        """Middle panel: toolbar, find bar, document (or theme excerpts) and the passage row.
+
+        Toolbar is a 3-column grid so the passage arrows stay centred whatever
+        the side columns hold: document picker | ◀ Passage n of N ▶ | Highlight, Find, Comments.
+        """
         center = QWidget()
         center_lay = QVBoxLayout(center)
+        center_lay.setContentsMargins(4, 0, 4, 0)
+        toolbar = QGridLayout()
+        toolbar.setColumnStretch(0, 1)
+        toolbar.setColumnStretch(2, 1)
+        left = QHBoxLayout()
         self.document_choice = QComboBox()
+        self.document_choice.setAccessibleName("Document")
+        self.document_choice.setMinimumContentsLength(10)
+        self.document_choice.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.document_choice.currentIndexChanged.connect(self.load_document)
-        center_lay.addWidget(self.document_choice)
-        view_bar = QHBoxLayout()
+        left.addWidget(self.document_choice, 1)
         self.view_mode = QComboBox()
         self.view_mode.addItems(["Full document", "Theme excerpts"])
         self.view_mode.setAccessibleName("Evidence view")
-        view_bar.addWidget(self.view_mode)
-        self.previous_passage = QPushButton("← Previous")
+        self.view_mode.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.view_mode.setMinimumContentsLength(9)
+        left.addWidget(self.view_mode)
+        toolbar.addLayout(left, 0, 0)
+        middle = QHBoxLayout()
+        self.previous_passage = QToolButton()
+        self.previous_passage.setText("◀")
+        self.previous_passage.setAccessibleName("Previous passage")
+        self.previous_passage.setToolTip("Previous passage")
         self.previous_passage.clicked.connect(lambda: self.step(-1))
-        view_bar.addWidget(self.previous_passage)
+        middle.addWidget(self.previous_passage)
         self.passage_position = QLabel("No passage selected")
-        view_bar.addWidget(self.passage_position, 1)
-        self.next_passage = QPushButton("Next →")
+        self.passage_position.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.passage_position.setMinimumWidth(130)
+        middle.addWidget(self.passage_position)
+        self.next_passage = QToolButton()
+        self.next_passage.setText("▶")
+        self.next_passage.setAccessibleName("Next passage")
+        self.next_passage.setToolTip("Next passage")
         self.next_passage.clicked.connect(lambda: self.step(1))
-        view_bar.addWidget(self.next_passage)
-        self.search_button = QPushButton("Search all documents")
-        self.search_button.setToolTip("Search every document (Ctrl+Shift+F)")
-        self.search_button.clicked.connect(self.search_requested)
-        view_bar.addWidget(self.search_button)
-        self.find_button = QPushButton("Find in document")
+        middle.addWidget(self.next_passage)
+        toolbar.addLayout(middle, 0, 1)
+        right = QHBoxLayout()
+        right.addStretch()
+        self.find_button = QPushButton("Find")
         self.find_button.setToolTip("Find in this document (Ctrl+F)")
         self.find_button.clicked.connect(self.open_find)
-        view_bar.addWidget(self.find_button)
-        self.other_themes_toggle = QPushButton("Show other themes faintly")
-        self.other_themes_toggle.setCheckable(True)
-        self.other_themes_toggle.setChecked(True)
-        self.other_themes_toggle.setToolTip("Show other themes' colours faintly behind the selected theme")
-        self.other_themes_toggle.toggled.connect(lambda _c: self.refresh_layers())
-        view_bar.addWidget(self.other_themes_toggle)
-        self.comments_toggle = QPushButton("Comments")
+        right.addWidget(self.find_button)
+        self.comments_toggle = QPushButton("💬 Comments")
         self.comments_toggle.setCheckable(True)
         self.comments_toggle.setChecked(True)
-        self.comments_toggle.setToolTip("Show comments beside the document")
-        view_bar.addWidget(self.comments_toggle)
-        self.notes_toggle = QPushButton("Memos")
-        self.notes_toggle.setCheckable(True)
-        view_bar.addWidget(self.notes_toggle)
-        center_lay.addLayout(view_bar)
+        self.comments_toggle.setToolTip("Show or hide comments")
+        self.comments_toggle.setMinimumWidth(self.comments_toggle.fontMetrics().horizontalAdvance("💬 Comments (999)") + 24)
+        right.addWidget(self.comments_toggle)
+        toolbar.addLayout(right, 0, 2)
+        # Equal side columns keep the arrows over the middle of the document.
+        side = max(left.sizeHint().width(), right.sizeHint().width())
+        toolbar.setColumnMinimumWidth(0, side)
+        toolbar.setColumnMinimumWidth(2, side)
+        center_lay.addLayout(toolbar)
         self.find_bar = FindBar()
         self.find_bar.hide()
         self.find_bar.changed.connect(self.run_find)
@@ -74,7 +91,6 @@ class ReaderMixin:
         self.evidence_views = QStackedWidget()
         self.view_mode.currentIndexChanged.connect(self.evidence_views.setCurrentIndex)
         self.viewer = SourceViewer()
-        self.viewer.setObjectName("documentViewer")
         self.viewer.setReadOnly(True)
         self.viewer.setObjectName("sourceViewer")
         self.viewer.clicked.connect(self.clicked_text)
@@ -92,6 +108,7 @@ class ReaderMixin:
         self.evidence_views.addWidget(reader)
         self.selection_toolbar = SelectionToolbar(self.viewer.viewport())
         self.selection_toolbar.code_requested.connect(self.code_selection_as)
+        self.selection_toolbar.new_theme_requested.connect(self.code_selection_as_new_theme)
         self.selection_toolbar.comment_requested.connect(self.comment_on_selection)
         # The toolbar appears only for selections the researcher makes, not when
         # the app moves to a passage.
@@ -103,44 +120,57 @@ class ReaderMixin:
         self.find_index = -1
         self.undo_stack = QUndoStack(self)
         center_lay.addWidget(self.evidence_views, 1)
-        add = QPushButton("Code selection")
-        self.add_selection_button = add
-        self.view_mode.currentIndexChanged.connect(lambda index: add.setEnabled(index == 0))
-        add.clicked.connect(self.add_selection)
-        center_lay.addWidget(add)
-        splitter.addWidget(center)
 
         self.occurrence_title = QLabel("Coded passages")
-        center_lay.addWidget(self.occurrence_title)
         self.hits = QListWidget()
         self.hits.currentRowChanged.connect(self.jump_to)
         self.hits.itemDoubleClicked.connect(lambda _item: self.view_mode.setCurrentIndex(0))
-        self.hits.setToolTip("Select an excerpt to navigate; double-click to open it in the full document.")
+        self.hits.setToolTip("Select an excerpt to go to it; double-click to open it in the full document.")
         self.hits.setWordWrap(True)
         self.hits.setSpacing(8)
-        self.hits.setAccessibleName("Theme evidence excerpts")
+        self.hits.setAccessibleName("Theme excerpts")
         self.hits.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.evidence_views.addWidget(self.hits)
-        nav = QHBoxLayout()
-        previous = QPushButton("← Previous")
-        previous.clicked.connect(lambda: self.step(-1))
-        next_button = QPushButton("Next →")
-        next_button.clicked.connect(lambda: self.step(1))
-        nav.addWidget(previous)
-        nav.addWidget(next_button)
-        previous.hide()
-        next_button.hide()
+        # The current passage: who coded it, its themes, and what can be done to it.
+        passage_row = QHBoxLayout()
+        passage_row.addWidget(QLabel("Highlight"))
+        self.highlight_selected = QPushButton("Selected theme")
+        self.highlight_all = QPushButton("All themes")
+        self.highlight_group = QButtonGroup(center)
+        for button in (self.highlight_selected, self.highlight_all):
+            button.setCheckable(True)
+            button.setObjectName("segment")
+            self.highlight_group.addButton(button)
+            passage_row.addWidget(button)
+        self.highlight_all.setChecked(True)
+        self.highlight_all.setToolTip("Colour every theme, with the selected one strongest")
+        self.highlight_selected.setToolTip("Colour only the selected theme")
+        self.highlight_group.buttonToggled.connect(lambda _b, on: on and self.refresh_layers())
+        passage_row.addSpacing(16)
         self.range_themes = QLabel("Select a coded passage to see its themes.")
+        self.range_themes.setObjectName("quiet")
         self.range_themes.setWordWrap(True)
-        center_lay.addWidget(self.range_themes)
-        accept = QPushButton("Keep this suggestion")
-        accept.clicked.connect(self.accept_selected_suggestion)
-        coding_actions = QHBoxLayout()
-        coding_actions.addWidget(accept)
-        remove = QPushButton("Uncode selection")
-        remove.clicked.connect(self.remove_selected_coding)
-        coding_actions.addWidget(remove)
-        center_lay.addLayout(coding_actions)
+        passage_row.addWidget(self.range_themes, 1)
+        self.keep_button = QPushButton("Keep")
+        self.keep_button.setToolTip("Keep the suggested passage as your coding; it stays in later analyses too")
+        self.keep_button.clicked.connect(self.accept_selected_suggestion)
+        self.not_theme_button = QPushButton("Not this theme")
+        self.not_theme_button.setToolTip("Take this passage out of the theme; other themes keep it")
+        self.not_theme_button.clicked.connect(self.remove_selected_coding)
+        self.uncode_button = QPushButton("Uncode")
+        self.uncode_button.setToolTip("Remove your coding of this passage from the theme")
+        self.uncode_button.clicked.connect(self.remove_selected_coding)
+        for button in (self.keep_button, self.not_theme_button, self.uncode_button):
+            button.hide()
+            passage_row.addWidget(button)
+        center_lay.addLayout(passage_row)
+        splitter.addWidget(center)
+
+    def show_passage_actions(self, origin):
+        """Keep / Not this theme for a suggestion, Uncode for your own coding, nothing otherwise."""
+        self.keep_button.setVisible(origin == "model")
+        self.not_theme_button.setVisible(origin == "model")
+        self.uncode_button.setVisible(origin == "researcher")
 
     def reload_documents(self, rebuild_trees=True):
         """Refill the document dropdown with the run's documents (all documents for manual coding).
@@ -154,7 +184,9 @@ class ReaderMixin:
         self.document_choice.blockSignals(True)
         self.document_choice.clear()
         selected = analysis_document_ids(self.directory, self.run_id) if self.run_id else None
-        for doc_id, name, status in list_documents(self.directory, include_removed=True):
+        everything = list_documents(self.directory, include_removed=True)
+        self.update_comment_names(documents={doc_id: name for doc_id, name, _ in everything})
+        for doc_id, name, status in everything:
             if selected is None or doc_id in selected:
                 self.document_choice.addItem(name + (" [removed]" if status == "removed" else ""), doc_id)
         index = self.document_choice.findData(old)
@@ -170,7 +202,7 @@ class ReaderMixin:
 
         Pre: any comment draft is saved first; if that fails the selection
         snaps back to the previous document.
-        Post: viewer, layers, comments and notes all show the new document. If Qt
+        Post: viewer, layers and comments all show the new document. If Qt
         altered the text, coding is disabled for it rather than risk wrong offsets.
         """
         if not self.comments_panel.flush_pending():
@@ -184,6 +216,7 @@ class ReaderMixin:
             self.match_index = -1
             self.hits.setCurrentRow(-1)
             self.range_themes.setText("Select a coded passage to see its themes.")
+            self.show_passage_actions(None)
         self.viewer.clear()
         self.source_text = ""
         self.coords = TextCoordinates.build("")
@@ -212,7 +245,6 @@ class ReaderMixin:
                 self._from_tree = False
             return
         self.highlight_matches()
-        self.reload_notes()
         self.update_passage_position()
 
     def select_range(self, doc, start, end):
@@ -223,10 +255,10 @@ class ReaderMixin:
 
     def update_passage_position(self):
         scope = self._navigation or {}
-        label = "this document" if scope.get("document_id") else "all matching documents"
         self.passage_position.setText(
-            f"Passage {self.match_index + 1} of {len(self.matches)} · {label}"
-            if self.match_index >= 0 else "No passage selected")
+            f"Passage {self.match_index + 1:,} of {len(self.matches):,}" if self.match_index >= 0 else "No passage selected")
+        self.passage_position.setToolTip("Counting passages in this document only" if scope.get("document_id")
+                                         else "Counting passages in every document")
         self.previous_passage.setEnabled(bool(self.matches))
         self.next_passage.setEnabled(bool(self.matches))
 
@@ -245,7 +277,7 @@ class ReaderMixin:
         except Exception:
             return
         current = self.current_theme_id()
-        show_others = self.other_themes_toggle.isChecked()
+        show_others = self.highlight_all.isChecked()
         ranges, markers = [], []
         total = max(1, self.viewer.document().characterCount())
         for (theme_id, doc), rows in self._navigation_groups.items():
@@ -398,11 +430,11 @@ class ReaderMixin:
         self.highlight_matches()
         origin = assignment_origin(self.directory, _id)
         self.range_themes.setText(("Suggested by the tool" if origin == "model" else "Your coding") +
-                                 "\nThemes: " + ", ".join(self.range_theme_labels(doc_id, start, end)))
-        self.reload_notes()
+                                 " · Themes: " + ", ".join(self.range_theme_labels(doc_id, start, end)))
+        self.show_passage_actions(origin)
         self.sync_tree_selection()
         self.update_passage_position()
-        self.status.setText(f"Occurrence {index + 1} of {len(self.matches)} · [{start}, {end})")
+        self.status.setText("")
 
     def clicked_text(self, qt_position: int):
         """Select the evidence row whose range contains a clicked Qt position."""

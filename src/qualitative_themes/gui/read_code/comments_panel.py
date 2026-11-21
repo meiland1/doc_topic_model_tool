@@ -1,4 +1,11 @@
-"""Comments column beside the reader: threads anchored to text, replies, resolve, autosaved drafts."""
+"""Comments column beside the reader.
+
+A comment can be on selected text, a theme, a document or the whole project
+(storage.comments.Target). The column shows one filter at a time (this
+document, this theme, the whole project) with pinned threads above it whatever
+the filter. Typing is autosaved as a draft. No names are shown: a project has
+one researcher.
+"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -6,10 +13,19 @@ from pathlib import Path
 import sqlite3
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+                               QPlainTextEdit, QPushButton, QScrollArea, QToolButton, QVBoxLayout, QWidget)
 
 from qualitative_themes.storage import comments as store
+from qualitative_themes.storage.comments import Target
+
+FILTERS = [("document", "This document"), ("theme", "This theme"), ("project", "Whole project")]
+COMMENT_ON = [("passage", "Selected text"), ("theme", "This theme"), ("document", "This document"),
+              ("project", "Whole project")]
+EMPTY = {"document": "No comments on this document yet. Select text and choose Comment, or use Comment on below.",
+         "theme": "No comments on this theme yet.",
+         "project": "No comments in this project yet.",
+         "no_theme": "Select a theme to see its comments."}
 
 
 def _when(stamp: str) -> str:
@@ -23,8 +39,13 @@ def _when(stamp: str) -> str:
     return f"{moment:%b} {moment.day}"
 
 
+def _short(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
 class ThreadCard(QFrame):
-    """One thread (root comment + replies) with reply/edit/resolve/delete controls."""
+    """One thread (root comment + replies) with pin, reply, edit, resolve and delete."""
     def __init__(self, panel: "CommentsPanel", root, replies):
         super().__init__()
         self.panel, self.root = panel, root
@@ -34,15 +55,23 @@ class ThreadCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(6)
-        quote = QLabel("“" + " ".join(root.quote.split())[:140] + ("…" if len(root.quote) > 140 else "") + "”")
-        quote.setObjectName("commentQuote")
-        quote.setWordWrap(True)
-        layout.addWidget(quote)
+        top = QHBoxLayout()
+        what = QLabel(panel.describe(root.target, root.quote, 140))
+        what.setObjectName("commentQuote")
+        what.setWordWrap(True)
+        top.addWidget(what, 1)
+        pin = QPushButton("Unpin" if root.pinned else "Pin")
+        pin.setObjectName("linkButton")
+        pin.setAccessibleName("Unpin this comment" if root.pinned else "Pin this comment to the top")
+        pin.clicked.connect(lambda: panel.pin(root.id, not root.pinned))
+        top.addWidget(pin, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(top)
         for comment in [root, *replies]:
             edited = comment.updated_at[:19] != comment.created_at[:19]
             header = QHBoxLayout()
-            meta = QLabel((comment.author or "You") + " · " + _when(comment.created_at)
-                          + (" · edited" if edited else "") + ("  ·  key quote" if comment.key_quote else ""))
+            meta = QLabel(" · ".join(part for part in (
+                ("↳ reply" if comment.parent_id else ""), _when(comment.created_at),
+                ("edited" if edited else ""), ("key quote" if comment.key_quote else "")) if part))
             meta.setObjectName("commentMeta")
             header.addWidget(meta, 1)
             edit = QPushButton("Edit")
@@ -105,8 +134,11 @@ class ThreadCard(QFrame):
         body.show()
 
     def mousePressEvent(self, event):
-        self.panel.open_range.emit(self.root.start, self.root.end)
         super().mousePressEvent(event)
+        # Going to the target can redraw the panel, which deletes this card; let
+        # the click finish first.
+        target, panel = self.root.target, self.panel
+        QTimer.singleShot(0, lambda: panel.open_target.emit(target))
 
     def send_reply(self):
         text = self.reply_field.text().strip()
@@ -115,22 +147,33 @@ class ThreadCard(QFrame):
 
 
 class CommentsPanel(QWidget):
-    """Comment column for the open document.
+    """The comments column.
 
-    `pending` is the (start, end, quote) being commented on; text typed for it
-    is autosaved as a draft comment. open_range(start, end) asks the
-    workspace to select a thread's text; changed() fires after any edit.
+    The workspace keeps it informed: set_document() and set_theme() when they
+    change, `theme_names` / `document_names` for labels, and
+    `selection_target()` (a callable returning a passage Target or None) for
+    "Comment on: Selected text". `pending` is the Target being written; its text
+    is autosaved as a draft. open_target(Target) asks the workspace to show
+    what a thread is on; changed() fires after any edit; count_changed(n) gives
+    the open threads in the current filter.
     """
-    open_range = Signal(int, int)
+    open_target = Signal(object)
     changed = Signal()
+    count_changed = Signal(int)
+    close_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.directory: Path | None = None
         self.document_id: str | None = None
-        self.pending: tuple[int, int, str] | None = None
+        self.theme_id: str | None = None
+        self.theme_names: dict[str, str] = {}
+        self.document_names: dict[str, str] = {}
+        self.selection_target = lambda: None
+        self.pending: Target | None = None
         self.draft_id: str | None = None
         self.cards: list[ThreadCard] = []
+        self._sections: list[QWidget] = []
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 0, 0, 0)
         header = QHBoxLayout()
@@ -138,10 +181,38 @@ class CommentsPanel(QWidget):
         self.title.setObjectName("setupName")
         header.addWidget(self.title)
         header.addStretch()
-        self.show_resolved = QCheckBox("Show resolved comments")
-        self.show_resolved.toggled.connect(lambda _c: self.reload())
-        header.addWidget(self.show_resolved)
+        close = QToolButton()
+        close.setText("×")
+        close.setAccessibleName("Close comments")
+        close.setToolTip("Close comments")
+        close.clicked.connect(self.close_requested)
+        header.addWidget(close)
         layout.addLayout(header)
+        show_row = QHBoxLayout()
+        show_row.addWidget(QLabel("Show"))
+        self.filter_choice = QComboBox()
+        for key, label in FILTERS:
+            self.filter_choice.addItem(label, key)
+        self.filter_choice.setAccessibleName("Show comments on")
+        self.filter_choice.currentIndexChanged.connect(lambda _i: self.reload())
+        show_row.addWidget(self.filter_choice, 1)
+        layout.addLayout(show_row)
+        self.show_resolved = QCheckBox("Show resolved")
+        self.show_resolved.toggled.connect(lambda _c: self.reload())
+        layout.addWidget(self.show_resolved)
+        on_row = QHBoxLayout()
+        on_row.addWidget(QLabel("Comment on"))
+        self.comment_on = QComboBox()
+        for key, label in COMMENT_ON:
+            self.comment_on.addItem(label, key)
+        self.comment_on.setAccessibleName("Comment on")
+        on_row.addWidget(self.comment_on, 1)
+        add = QPushButton("Add")
+        add.setObjectName("smallButton")
+        add.setAccessibleName("Add a comment")
+        add.clicked.connect(self.add_chosen)
+        on_row.addWidget(add)
+        layout.addLayout(on_row)
         self.composer = QFrame()
         self.composer.setObjectName("commentComposer")
         composer = QVBoxLayout(self.composer)
@@ -151,7 +222,7 @@ class CommentsPanel(QWidget):
         self.composer_quote.setWordWrap(True)
         composer.addWidget(self.composer_quote)
         self.editor = QPlainTextEdit()
-        self.editor.setPlaceholderText("Add a comment… (saved as a draft while you type)")
+        self.editor.setPlaceholderText("Write a comment… (saved as a draft while you type)")
         self.editor.setMaximumHeight(90)
         self.editor.setAccessibleName("New comment")
         composer.addWidget(self.editor)
@@ -181,7 +252,7 @@ class CommentsPanel(QWidget):
         self.list_layout.addStretch()
         self.scroll.setWidget(self.list_widget)
         layout.addWidget(self.scroll, 1)
-        self.empty = QLabel("Select text and choose Comment to add a note beside it.")
+        self.empty = QLabel(EMPTY["document"])
         self.empty.setObjectName("quiet")
         self.empty.setWordWrap(True)
         layout.addWidget(self.empty)
@@ -196,9 +267,40 @@ class CommentsPanel(QWidget):
         layout.addWidget(self.save_status)
         self.editor.textChanged.connect(lambda: self.save_status.setText("Saving draft…"))
 
+    # Labels -------------------------------------------------------------------
+    def describe(self, target: Target, quote: str = "", limit: int = 160) -> str:
+        """What a comment is on, in words, for card and composer headings."""
+        here = target.document_id == self.document_id and self.filter_key() == "document"
+        document = self.document_names.get(target.document_id, "a removed document")
+        if target.scope == "project":
+            return "On the whole project"
+        if target.scope == "theme":
+            return "On theme: " + self.theme_names.get(target.theme_id, "a theme no longer shown")
+        if target.scope == "document":
+            return "On this document" if here else "On document: " + document
+        text = "“" + _short(quote, limit) + "”"
+        return text if here else f"{document} · {text}"
+
     # Data ---------------------------------------------------------------------
+    def filter_key(self) -> str:
+        return self.filter_choice.currentData()
+
+    def set_filter(self, key: str):
+        index = self.filter_choice.findData(key)
+        if index >= 0:
+            self.filter_choice.setCurrentIndex(index)
+
+    def _filter_args(self):
+        """Keyword arguments for store.list_comments, or None if the filter has nothing to show."""
+        key = self.filter_key()
+        if key == "document":
+            return {"document_id": self.document_id} if self.document_id else None
+        if key == "theme":
+            return {"theme_id": self.theme_id} if self.theme_id else None
+        return {}
+
     def set_document(self, directory, document_id):
-        """Switch documents. Callers must flush_pending() first (the workspace does)."""
+        """Switch documents. Saves any draft first; returns False (and stays put) if it can't."""
         if not self.flush_pending():
             return False
         self.directory, self.document_id = (Path(directory) if directory else None), document_id
@@ -208,46 +310,107 @@ class CommentsPanel(QWidget):
         self.restore_draft()
         return True
 
-    def reload(self):
-        for card in self.cards:
-            card.setParent(None)
-            card.deleteLater()
-        self.cards = []
-        if not self.directory or not self.document_id:
-            self.title.setText("Comments")
-            self.empty.show()
+    def set_theme(self, theme_id):
+        """The selected theme changed. The open draft, if any, is left alone."""
+        if theme_id == self.theme_id:
             return
-        threads = store.list_threads(self.directory, self.document_id, self.show_resolved.isChecked())
-        for root, replies in threads:
-            card = ThreadCard(self, root, replies)
-            self.list_layout.insertWidget(self.list_layout.count() - 1, card)
-            self.cards.append(card)
-        resolved = store.resolved_count(self.directory, self.document_id)
-        self.show_resolved.setText(f"Show resolved comments ({resolved})")
-        open_count = sum(1 for root, _ in threads if root.state != "resolved")
+        self.theme_id = theme_id
+        if self.filter_key() == "theme":
+            self.reload()
+
+    def reload(self):
+        for widget in [*self.cards, *self._sections]:
+            widget.setParent(None)
+            widget.deleteLater()
+        self.cards, self._sections = [], []
+        args = self._filter_args() if self.directory else None
+        if not self.directory:
+            self.title.setText("Comments")
+            self.empty.setText(EMPTY["document"])
+            self.empty.show()
+            self.count_changed.emit(0)
+            return
+        # With nothing to filter on (This theme, no theme selected) only pinned threads show:
+        # a document id that can't exist matches nothing else.
+        threads = store.list_comments(self.directory, include_resolved=self.show_resolved.isChecked(),
+                                      pinned_too=True, **(args if args is not None else {"document_id": ""}))
+        pinned = [thread for thread in threads if thread[0].pinned]
+        others = [thread for thread in threads if not thread[0].pinned] if args is not None else []
+        if pinned:
+            self._add_section("Pinned")
+            for root, replies in pinned:
+                self._add_card(root, replies)
+            if others:
+                self._add_section(dict(FILTERS)[self.filter_key()])
+        for root, replies in others:
+            self._add_card(root, replies)
+        if args is None:
+            open_count = resolved = 0
+        else:
+            open_count = store.open_count(self.directory, **args)
+            resolved = store.resolved_count(self.directory, **args)
+        self.show_resolved.setText(f"Show resolved ({resolved})")
         self.title.setText(f"Comments · {open_count} open")
-        self.empty.setVisible(not threads)
+        key = "no_theme" if args is None and self.filter_key() == "theme" else self.filter_key()
+        self.empty.setText(EMPTY[key])
+        self.empty.setVisible(not others)
+        self.count_changed.emit(open_count)
+
+    def _add_section(self, text):
+        label = QLabel(text)
+        label.setObjectName("commentSection")
+        self.list_layout.insertWidget(self.list_layout.count() - 1, label)
+        self._sections.append(label)
+
+    def _add_card(self, root, replies):
+        card = ThreadCard(self, root, replies)
+        self.list_layout.insertWidget(self.list_layout.count() - 1, card)
+        self.cards.append(card)
 
     def restore_draft(self):
-        if not self.directory or not self.document_id:
+        if not self.directory:
             return
         saved = store.drafts(self.directory, self.document_id)
         if saved:
             draft = saved[0]
-            self.begin_comment(draft.start, draft.end, draft.quote, draft_id=draft.id, body=draft.body,
+            self.begin_comment(draft.target, quote=draft.quote, draft_id=draft.id, body=draft.body,
                                key_quote=draft.key_quote)
 
     # Actions --------------------------------------------------------------------
-    def begin_comment(self, start, end, quote, draft_id=None, body="", key_quote=False):
+    def add_chosen(self):
+        """The Add button: start a comment on whatever 'Comment on' names."""
+        key = self.comment_on.currentData()
+        if key == "passage":
+            target = self.selection_target()
+            problem = "Select some text in the document first."
+        elif key == "theme":
+            target = Target.theme(self.theme_id) if self.theme_id else None
+            problem = "Select a theme first."
+        elif key == "document":
+            target = Target.document(self.document_id) if self.document_id else None
+            problem = "Open a document first."
+        else:
+            target, problem = Target.project(), ""
+        if target is None:
+            self.save_status.setText(problem)
+            return
+        quote = ""
+        if target.scope == "passage" and self.directory:
+            from qualitative_themes.storage.documents import get_document
+            quote = get_document(self.directory, target.document_id)[1][target.start:target.end]
+        self.begin_comment(target, quote=quote)
+
+    def begin_comment(self, target: Target, quote: str = "", draft_id=None, body="", key_quote=False):
+        """Open the composer for `target`. Any draft already open is saved first."""
         if not self.flush_pending():
             return
-        self.pending = (start, end, quote)
+        self.pending = target
         self.draft_id = draft_id
-        self.composer_quote.setText("“" + " ".join(quote.split())[:160] + ("…" if len(quote) > 160 else "") + "”"
-                                    + ("   (restored draft)" if draft_id else ""))
+        self.composer_quote.setText(self.describe(target, quote) + ("   (restored draft)" if draft_id else ""))
         self.editor.blockSignals(True)
         self.editor.setPlainText(body)
         self.editor.blockSignals(False)
+        self.key_quote.setVisible(target.scope == "passage")
         self.key_quote.setChecked(key_quote)
         self.composer.show()
         self.editor.setFocus()
@@ -263,15 +426,14 @@ class CommentsPanel(QWidget):
 
     def save_draft(self):
         """Store the editor text as a draft comment. True if saved (or nothing to save)."""
-        if not self.pending or not self.directory or not self.document_id:
+        if not self.pending or not self.directory:
             return True
         body = self.editor.toPlainText()
         try:
             if self.draft_id:
                 store.update_comment(self.directory, self.draft_id, body, key_quote=self.key_quote.isChecked())
             elif body.strip():
-                start, end, _ = self.pending
-                self.draft_id = store.add_comment(self.directory, self.document_id, start, end, body, draft=True,
+                self.draft_id = store.add_comment(self.directory, self.pending, body, draft=True,
                                                   key_quote=self.key_quote.isChecked())
         except (ValueError, OSError, sqlite3.Error) as exc:
             self.save_status.setText(f"Could not save draft: {exc}. Your text is still here; try again before leaving.")
@@ -290,9 +452,7 @@ class CommentsPanel(QWidget):
             if self.draft_id:
                 store.update_comment(self.directory, self.draft_id, body, key_quote=self.key_quote.isChecked(), publish=True)
             else:
-                start, end, _ = self.pending
-                store.add_comment(self.directory, self.document_id, start, end, body,
-                                  key_quote=self.key_quote.isChecked())
+                store.add_comment(self.directory, self.pending, body, key_quote=self.key_quote.isChecked())
         except (ValueError, OSError, sqlite3.Error) as exc:
             QMessageBox.warning(self, "Could not save comment", str(exc))
             return
@@ -313,7 +473,7 @@ class CommentsPanel(QWidget):
         self.composer.hide()
 
     def reply(self, root_id, text):
-        store.add_comment(self.directory, self.document_id, 0, 0, text, parent_id=root_id)
+        store.add_comment(self.directory, Target.project(), text, parent_id=root_id)
         self.reload()
         self.changed.emit()
 
@@ -340,11 +500,18 @@ class CommentsPanel(QWidget):
         self.reload()
         self.changed.emit()
 
+    def pin(self, root_id, pinned):
+        store.set_pinned(self.directory, root_id, pinned)
+        self.reload()
+        self.changed.emit()
+
     def follow(self, first_visible_char: int):
-        """Keep the column roughly level with the text: scroll to the first thread at or after it."""
+        """Keep the column roughly level with the text: scroll to the first thread here at or after it."""
+        if self.filter_key() != "document":
+            return
         for card in self.cards:
-            if card.root.end >= first_visible_char:
-                self.scroll.ensureWidgetVisible(card, 0, 0)
-                bar = self.scroll.verticalScrollBar()
-                bar.setValue(card.y())
+            root = card.root
+            if root.scope == "passage" and root.document_id == self.document_id and not root.pinned \
+                    and root.end >= first_visible_char:
+                self.scroll.verticalScrollBar().setValue(card.y())
                 return

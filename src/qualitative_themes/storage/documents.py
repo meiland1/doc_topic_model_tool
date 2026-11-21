@@ -113,7 +113,7 @@ def _change_availability(directory: Path, document_ids: list[str], removing: boo
                      (str(uuid4()), datetime.now(timezone.utc).isoformat(),
                       "documents_removed" if removing else "documents_restored",
                       json.dumps({"documents": [{"document_id": row[0], "name": row[1]} for row in rows],
-                                  "policy": "Reversible corpus exclusion; preserve sources, analyses, coding, and notes."})))
+                                  "policy": "Reversible corpus exclusion; preserve sources, analyses, coding, and comments."})))
     return len(rows)
 
 

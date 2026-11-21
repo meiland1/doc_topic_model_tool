@@ -20,12 +20,13 @@ def project(tmp_path):
 
 
 def test_backup_roundtrip_preserves_research_and_sources(project, tmp_path):
-    from qualitative_themes.storage.coding import create_theme, add_coding, add_note
+    from qualitative_themes.storage.coding import create_theme, add_coding
+    from qualitative_themes.storage.comments import Target, add_comment
     study, doc = project
     theme = create_theme(study.directory, 'Transport')
     add_coding(study.directory, doc, 0, 10, theme)
-    add_note(study.directory, 'Existing memo is preserved', theme_id=theme)
-    comments.add_comment(study.directory, doc, 0, 10, 'Pending observation', draft=True)
+    add_comment(study.directory, Target.theme(theme), 'Existing theme comment is preserved')
+    comments.add_comment(study.directory, comments.Target.passage(doc, 0, 10), 'Pending observation', draft=True)
     remove_documents(study.directory, [doc])
     artifact = study.directory / 'models' / 'nested' / 'saved.bin'
     artifact.parent.mkdir()
@@ -35,7 +36,7 @@ def test_backup_roundtrip_preserves_research_and_sources(project, tmp_path):
     assert open_project(restored).name == 'Study'
     assert (restored / 'models/nested/saved.bin').read_bytes() == artifact.read_bytes()
     with connect(study.directory) as before, connect(restored) as after:
-        for table in ('project', 'documents', 'document_pages', 'themes', 'codings', 'notes', 'comments', 'history_events'):
+        for table in ('project', 'documents', 'document_pages', 'themes', 'codings', 'comments', 'history_events'):
             assert before.execute(f'SELECT * FROM {table}').fetchall() == after.execute(f'SELECT * FROM {table}').fetchall()
 
 
@@ -135,7 +136,7 @@ def test_close_flushes_comment_before_autosave_timer(project):
     window._show_project(study)
     panel = window.workspace.comments_panel
     panel.set_document(study.directory, doc)
-    panel.begin_comment(0, 10, 'The clinic')
+    panel.begin_comment(comments.Target.passage(doc, 0, 10), quote='The clinic')
     panel.editor.setPlainText('Save this immediately')
     assert panel._autosave.isActive()
     window.close()
@@ -147,7 +148,7 @@ def test_failed_comment_flush_keeps_text_and_document(project, monkeypatch):
     study, doc = project
     panel = CommentsPanel()
     panel.set_document(study.directory, doc)
-    panel.begin_comment(0, 10, 'The clinic')
+    panel.begin_comment(comments.Target.passage(doc, 0, 10), quote='The clinic')
     panel.editor.setPlainText('Do not lose this')
     def fail(*args, **kwargs):
         raise OSError('Disk full')
@@ -174,7 +175,7 @@ def test_backup_action_flushes_draft_and_restore_opens_new_copy(project, tmp_pat
     window._show_project(study)
     panel = window.workspace.comments_panel
     panel.set_document(study.directory, doc)
-    panel.begin_comment(0, 10, 'The clinic')
+    panel.begin_comment(comments.Target.passage(doc, 0, 10), quote='The clinic')
     panel.editor.setPlainText('Draft included in backup')
     archive = tmp_path / 'via-ui.tmtbackup'
     monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: (str(archive), ''))

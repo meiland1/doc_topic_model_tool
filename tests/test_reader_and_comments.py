@@ -24,20 +24,20 @@ def project(tmp_path):
 
 def test_comments_thread_resolve_and_drafts(project):
     directory, doc = project
-    root = store.add_comment(directory, doc, 4, 10, "Ties to the transport theme", key_quote=True)
-    store.add_comment(directory, doc, 0, 0, "Agreed", parent_id=root)
+    root = store.add_comment(directory, store.Target.passage(doc, 4, 10), "Ties to the transport theme", key_quote=True)
+    store.add_comment(directory, store.Target.passage(doc, 0, 0), "Agreed", parent_id=root)
     threads = store.list_threads(directory, doc)
     assert len(threads) == 1 and threads[0][0].quote == "clinic" and threads[0][1][0].body == "Agreed"
     assert threads[0][1][0].start == 4  # replies inherit the thread's anchor
     store.set_resolved(directory, root)
     assert store.list_threads(directory, doc) == []
     assert len(store.list_threads(directory, doc, include_resolved=True)) == 1
-    draft = store.add_comment(directory, doc, 0, 3, "half-written", draft=True)
+    draft = store.add_comment(directory, store.Target.passage(doc, 0, 3), "half-written", draft=True)
     assert [d.id for d in store.drafts(directory, doc)] == [draft]
     store.update_comment(directory, draft, "finished thought", publish=True)
     assert store.drafts(directory, doc) == []
     with pytest.raises(ValueError):
-        store.add_comment(directory, doc, 0, 999, "out of range")
+        store.add_comment(directory, store.Target.passage(doc, 0, 999), "out of range")
 
 
 def test_comments_survive_coding_removal(project):
@@ -45,7 +45,7 @@ def test_comments_survive_coding_removal(project):
     directory, doc = project
     theme = create_theme(directory, "Transport")
     coding = add_coding(directory, doc, 4, 10, theme)
-    store.add_comment(directory, doc, 4, 10, "note on the coding")
+    store.add_comment(directory, store.Target.passage(doc, 4, 10), "note on the coding")
     remove_coding(directory, coding)
     assert store.list_threads(directory, doc)[0][0].body == "note on the coding"
 
@@ -133,8 +133,8 @@ def test_comment_from_selection_is_saved_beside_the_text(project):
 def test_comments_can_be_edited_and_deleted_from_the_panel(project, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
     directory, doc = project
-    root = store.add_comment(directory, doc, 4, 10, "first wording")
-    store.add_comment(directory, doc, 0, 0, "a reply", parent_id=root)
+    root = store.add_comment(directory, store.Target.passage(doc, 4, 10), "first wording")
+    store.add_comment(directory, store.Target.passage(doc, 0, 0), "a reply", parent_id=root)
     w = make_workspace(directory, doc)
     panel = w.comments_panel
     panel.edit(root, "second wording")

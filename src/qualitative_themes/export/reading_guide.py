@@ -55,13 +55,19 @@ def export_reading_guide(directory: Path, run_id: str | None, destination: Path)
                                f"({cover['share']:.0%}).")
     comments_by_doc = {}
     for doc, _name in overview["documents"]:
-        comments_by_doc[doc] = [root for root, _ in comment_store.list_threads(directory, doc, include_resolved=True)]
+        comments_by_doc[doc] = [root for root, _ in comment_store.list_threads(directory, doc, include_resolved=True)
+                                if root.scope == "passage"]
     for theme in overview["themes"]:
         document.add_heading(theme["label"], 1)
         meta = f"{theme['passages']} passages in {theme['documents']} documents"
         if theme["keywords"]:
             meta += " · keywords: " + ", ".join(theme["keywords"])
         document.add_paragraph(meta).runs[0].font.color.rgb = RGBColor(0x52, 0x64, 0x78)
+        for root, _replies in comment_store.list_comments(directory, theme_id=theme["theme_id"], include_resolved=True):
+            if root.scope == "theme":
+                note = document.add_paragraph()
+                note.add_run("Comment on this theme: ").italic = True
+                note.add_run(root.body)
         queue = reading_queue(directory, run_id, [theme["theme_id"]])
         by_doc = {}
         for item in queue:
@@ -82,7 +88,7 @@ def export_reading_guide(directory: Path, run_id: str | None, destination: Path)
             for comment in comments_by_doc.get(item["document_id"], []):
                 if comment.start < item["end"] and item["start"] < comment.end:
                     note = document.add_paragraph(style="List Bullet 2")
-                    note.add_run("Note: ").italic = True
+                    note.add_run("Comment: ").italic = True
                     note.add_run(comment.body)
         if len(queue) > MAX_PASSAGES:
             document.add_paragraph().add_run(f"…and {len(queue) - MAX_PASSAGES} more passages in the app.").italic = True

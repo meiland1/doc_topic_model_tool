@@ -21,7 +21,7 @@ def study(tmp_path):
 def test_daily_snapshot_and_restorable_draft(study, tmp_path):
     project, doc = study
     day = date(2026, 11, 13)
-    comments.add_comment(project.directory, doc, 0, 7, 'Keep this draft', draft=True)
+    comments.add_comment(project.directory, comments.Target.passage(doc, 0, 7), 'Keep this draft', draft=True)
     assert recovery.snapshot_due(project.directory, day)
     first = recovery.create_snapshot(project.directory, today=day)
     assert not recovery.snapshot_due(project.directory, day)
@@ -192,7 +192,7 @@ def test_ui_snapshot_flushes_draft_and_failure_is_nonmodal(study, monkeypatch):
     window._show_project(project)
     panel = window.workspace.comments_panel
     panel.set_document(project.directory, doc)
-    panel.begin_comment(0, 7, 'The bus')
+    panel.begin_comment(comments.Target.passage(doc, 0, 7), quote='The bus')
     panel.editor.setPlainText('Before the timer fires')
     window.recovery.run(manual=True)
     assert len(recovery.list_snapshots(project.directory)) == 1

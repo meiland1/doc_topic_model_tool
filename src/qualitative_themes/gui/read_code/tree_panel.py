@@ -8,49 +8,102 @@ state documented there and are not meant to be used on their own.
 """
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QLabel, QListWidget, QPushButton, QTabWidget, QTreeWidget,
-                               QTreeWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QMenu, QPushButton,
+                               QHeaderView, QStackedLayout, QTabWidget, QToolButton, QTreeWidget, QTreeWidgetItem,
+                               QVBoxLayout, QWidget)
 
+from qualitative_themes.gui.viewer_parts import swatch_icon
 from qualitative_themes.storage.navigation import navigation_groups
+
+TREE_WIDTH = 300
+STRIP_WIDTH = 52
+SORTS = ("Most passages", "A–Z")
+
+
+_SWATCHES = {}
+
+
+def _swatch(index):
+    """Theme colour dot, cached: trees can have hundreds of theme rows."""
+    if index not in _SWATCHES:
+        _SWATCHES[index] = swatch_icon(index)
+    return _SWATCHES[index]
+
+
+def _plural(count, word):
+    return f"{count} {word if count == 1 else word + 's'}"
 
 
 class TreePanelMixin:
     def _build_tree_panel(self, splitter):
-        """Left panel: theme/document trees and theme actions."""
-        # Topic Window organized by Documents or by Themes
+        """Left panel: By theme / By document trees, search, sort and + New theme.
+
+        « collapses it to a narrow strip that names the current theme (Ctrl+\\).
+        """
         left = QWidget()
         self.evidence_browser = left
-        left_lay = QVBoxLayout(left)
-        left_lay.addWidget(QLabel("Passages"))
+        self.tree_pages = QStackedLayout(left)
+        full = QWidget()
+        left_lay = QVBoxLayout(full)
+        left_lay.setContentsMargins(0, 0, 4, 0)
         # Internal flat selection controller keeps theme actions independent of
         # which tree contains the selection. Only the two trees are displayed.
         self.themes = QListWidget(self)
         self.themes.hide()
         self.themes.currentItemChanged.connect(self.select_theme)
+        top = QHBoxLayout()
+        self.tree_search = QLineEdit()
+        self.tree_search.setPlaceholderText("Search themes and documents")
+        self.tree_search.setClearButtonEnabled(True)
+        self.tree_search.setAccessibleName("Search the tree")
+        self.tree_search.textChanged.connect(self.filter_tree)
+        top.addWidget(self.tree_search, 1)
+        self.tree_collapse_button = QToolButton()
+        self.tree_collapse_button.setText("«")
+        self.tree_collapse_button.setToolTip("Hide the tree to give the document more room (Ctrl+\\)")
+        self.tree_collapse_button.setAccessibleName("Hide the tree")
+        self.tree_collapse_button.clicked.connect(lambda: self.set_tree_collapsed(True))
+        top.addWidget(self.tree_collapse_button)
+        left_lay.addLayout(top)
         self.organization_tabs = QTabWidget()
         self.document_tree = QTreeWidget()
         self.theme_tree = QTreeWidget()
-        for tree, label in [(self.document_tree, "By Document"), (self.theme_tree, "By Theme")]:
+        for tree, label in [(self.document_tree, "By document"), (self.theme_tree, "By theme")]:
             tree.setHeaderHidden(True)
-            tree.setAccessibleName(label + " evidence tree")
-            tree.setUniformRowHeights(True)
+            tree.setColumnCount(2)  # name | passage count
+            tree.header().setStretchLastSection(False)
+            tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+            tree.setAccessibleName(label + " tree")
+            tree.setWordWrap(True)
             tree.currentItemChanged.connect(self.tree_selected)
             tree.itemClicked.connect(self.tree_clicked)
             tree.itemExpanded.connect(self.populate_children)
+            tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            tree.customContextMenuRequested.connect(lambda point, t=tree: self.tree_menu(t, point))
             self.organization_tabs.addTab(tree, label)
         self.organization_tabs.setCurrentIndex(1)
         self.organization_tabs.currentChanged.connect(self.organization_changed)
-        left_lay.addWidget(self.organization_tabs)
-        tree_help = QLabel("Expand groups to browse passages. Select a document to open it, a theme/document group to highlight its evidence, or a passage to highlight only that excerpt.")
-        tree_help.setObjectName("workspaceHelp")
-        tree_help.setWordWrap(True)
-        left_lay.addWidget(tree_help)
+        left_lay.addWidget(self.organization_tabs, 1)
+        bottom = QHBoxLayout()
+        self.tree_sort = QComboBox()
+        self.tree_sort.addItems(SORTS)
+        self.tree_sort.setAccessibleName("Sort the tree")
+        self.tree_sort.currentIndexChanged.connect(lambda _i: self.reload_themes())
+        bottom.addWidget(QLabel("Sort"))
+        bottom.addWidget(self.tree_sort, 1)
+        new_theme = QPushButton("+ New theme")
+        new_theme.clicked.connect(lambda: self.new_theme())
+        bottom.addWidget(new_theme)
+        left_lay.addLayout(bottom)
         self.theme_origin_label = QLabel("Came from: select a theme.")
+        self.theme_origin_label.setObjectName("quiet")
         self.theme_origin_label.setTextFormat(Qt.TextFormat.PlainText)
         self.theme_origin_label.setWordWrap(True)
         self.theme_origin_label.setAccessibleName("Selected theme origin")
         left_lay.addWidget(self.theme_origin_label)
         self.theme_keywords_label = QLabel("Keywords: Select a theme.")
+        self.theme_keywords_label.setObjectName("quiet")
         self.theme_keywords_label.setTextFormat(Qt.TextFormat.PlainText)
         self.theme_keywords_label.setWordWrap(True)
         self.theme_keywords_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -59,35 +112,98 @@ class TreePanelMixin:
             "The percentage shows how strongly each word belongs to the theme; it isn't a probability. "
             "Merged themes show each word's highest score. Keywords are separate from the theme's name.")
         left_lay.addWidget(self.theme_keywords_label)
-        new_theme = QPushButton("+ New theme")
-        new_theme.clicked.connect(self.new_theme)
-        left_lay.addWidget(new_theme)
-        rename = QPushButton("Rename theme…")
-        rename.clicked.connect(self.rename_selected_theme)
-        left_lay.addWidget(rename)
-        merge = QPushButton("Merge into another theme…")
-        merge.clicked.connect(self.merge_selected_theme)
-        left_lay.addWidget(merge)
+        self.tree_pages.addWidget(full)
+
+        strip = QWidget()
+        strip_lay = QVBoxLayout(strip)
+        strip_lay.setContentsMargins(2, 0, 2, 0)
+        self.tree_expand_button = QToolButton()
+        self.tree_expand_button.setText("»")
+        self.tree_expand_button.setToolTip("Show the tree (Ctrl+\\)")
+        self.tree_expand_button.setAccessibleName("Show the tree")
+        self.tree_expand_button.clicked.connect(lambda: self.set_tree_collapsed(False))
+        strip_lay.addWidget(self.tree_expand_button, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.tree_strip_label = QLabel()
+        self.tree_strip_label.setObjectName("treeStrip")
+        self.tree_strip_label.setWordWrap(True)
+        self.tree_strip_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        strip_lay.addWidget(self.tree_strip_label, 1)
+        self.tree_pages.addWidget(strip)
+        self._tree_width = TREE_WIDTH
         splitter.addWidget(left)
 
-    def toggle_evidence_browser(self, visible):
-        if visible:
-            self.evidence_browser.show()
-            if self._browser_sizes:
-                self.workspace_splitter.setSizes(self._browser_sizes)
+    def tree_collapsed(self) -> bool:
+        return self.tree_pages.currentIndex() == 1
+
+    def set_tree_collapsed(self, collapsed: bool):
+        """Swap the tree for the narrow strip (or back). Selection and scope are untouched."""
+        if collapsed == self.tree_collapsed():
+            return
+        sizes = self.workspace_splitter.sizes()
+        if collapsed:
+            self._tree_width = max(sizes[0], STRIP_WIDTH * 2)
+            self.tree_pages.setCurrentIndex(1)
+            self.evidence_browser.setFixedWidth(STRIP_WIDTH)
+            sizes[1] += sizes[0] - STRIP_WIDTH
+            sizes[0] = STRIP_WIDTH
+            self.update_tree_strip()
         else:
-            self._browser_sizes = self.workspace_splitter.sizes()
-            self.evidence_browser.hide()
-        self.browse_toggle.setText("Hide passage list" if visible else "Show passage list")
+            self.evidence_browser.setMinimumWidth(0)
+            self.evidence_browser.setMaximumWidth(16777215)
+            self.tree_pages.setCurrentIndex(0)
+            sizes[1] = max(200, sizes[1] - (self._tree_width - sizes[0]))
+            sizes[0] = self._tree_width
+        self.workspace_splitter.setSizes(sizes)
+
+    def toggle_tree(self):
+        self.set_tree_collapsed(not self.tree_collapsed())
+
+    def update_tree_strip(self):
+        """The collapsed strip shows the current theme's colour and a short name."""
+        if not self.tree_collapsed():
+            return
+        theme = self.current_theme_id()
+        label = next((name for tid, name, _ in self.visible_themes() if tid == theme), "") if theme else ""
+        short = label if len(label) <= 40 else label[:39] + "…"
+        self.tree_strip_label.setText(short)
+        self.tree_strip_label.setToolTip(label)
+
+    def tree_menu(self, tree, point):
+        """Right-click on a theme row: rename or merge it."""
+        item = tree.itemAt(point)
+        data = item.data(0, Qt.ItemDataRole.UserRole) if item else None
+        if not data or not data.get("theme_id"):
+            return
+        tree.setCurrentItem(item)
+        menu = QMenu(tree)
+        menu.addAction("Rename theme…", self.rename_selected_theme)
+        menu.addAction("Merge into another theme…", self.merge_selected_theme)
+        menu.exec(tree.viewport().mapToGlobal(point))
+
+    def filter_tree(self, _text=None):
+        """Hide top-level rows whose name doesn't contain the search text (both trees)."""
+        needle = self.tree_search.text().strip().lower()
+        for tree in (self.document_tree, self.theme_tree):
+            for index in range(tree.topLevelItemCount()):
+                item = tree.topLevelItem(index)
+                name = item.data(0, Qt.ItemDataRole.UserRole + 1) or item.text(0)
+                item.setHidden(bool(needle) and needle not in name.lower())
 
     @staticmethod
     def navigation_key(data):
         return (data.get("kind"), data.get("theme_id"), data.get("document_id"), data.get("start"), data.get("end"))
 
-    def add_tree_node(self, tree, parent, label, data):
-        item = QTreeWidgetItem([label])
+    def add_tree_node(self, tree, parent, label, data, name=None, colour=None, count=None, detail=None):
+        """Add a row. `name` is what the search box matches; `colour` a theme colour index for the dot;
+        `count` goes in the right-hand column and `detail` in the tooltip."""
+        item = QTreeWidgetItem([label, "" if count is None else f"{count:,}"])
+        item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         item.setData(0, Qt.ItemDataRole.UserRole, data)
-        item.setToolTip(0, label)
+        item.setData(0, Qt.ItemDataRole.UserRole + 1, name or label)
+        item.setToolTip(0, detail or label)
+        item.setToolTip(1, detail or label)
+        if colour is not None:
+            item.setIcon(0, _swatch(colour))
         if parent is None:
             tree.addTopLevelItem(item)
         else:
@@ -107,6 +223,8 @@ class TreePanelMixin:
         self._navigation_groups = navigation_groups(self.directory, {tid for tid, _, _ in themes}, {doc for doc, _ in documents}, self.run_id)
         self._nav_themes = [(tid, label) for tid, label, _ in themes]
         self._nav_documents = documents
+        colours = {tid: index for index, (tid, _label, _count) in enumerate(themes)}
+        self._nav_colours = colours
         self._rebuilding_trees = True
         try:
             for tree in [self.document_tree, self.theme_tree]:
@@ -114,23 +232,33 @@ class TreePanelMixin:
                 tree.blockSignals(True)
                 tree.clear()
                 self._tree_nodes[tree] = {}
+                by_count = self.tree_sort.currentIndex() == 0
                 if tree is self.document_tree:
+                    rows = []
                     for doc, name in documents:
                         groups = [(tid, label) for tid, label, _ in themes if (tid, doc) in self._navigation_groups]
                         passage_count = len({(row[3], row[4]) for tid, _ in groups for row in self._navigation_groups[(tid, doc)]})
-                        parent = self.add_tree_node(tree, None,
-                            f"{name} ({len(groups)} {'theme' if len(groups) == 1 else 'themes'} · {passage_count} {'passage' if passage_count == 1 else 'passages'})",
-                            {"kind": "document", "document_id": doc})
-                        parent.setToolTip(0, parent.text(0) + "\nCounts distinct themes and unique source ranges in this document; a range assigned to multiple themes counts once.")
+                        rows.append((doc, name, groups, passage_count))
+                    if by_count:
+                        rows.sort(key=lambda row: -row[3])
+                    for doc, name, groups, passage_count in rows:
+                        parent = self.add_tree_node(tree, None, name, {"kind": "document", "document_id": doc}, count=passage_count,
+                            detail=f"{name}\n{_plural(len(groups), 'theme')}, {_plural(passage_count, 'passage')}"
+                                   "\nA passage coded to more than one theme counts once.")
                         if groups:
                             parent.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
                 else:
+                    rows = []
                     for tid, label, _ in themes:
                         docs = [(doc, name) for doc, name in documents if (tid, doc) in self._navigation_groups]
                         count = sum(len(self._navigation_groups[(tid, doc)]) for doc, _ in docs)
-                        parent = self.add_tree_node(tree, None,
-                            f"{label} ({len(docs)} {'document' if len(docs) == 1 else 'documents'} · {count} {'passage' if count == 1 else 'passages'})",
-                            {"kind": "theme", "theme_id": tid})
+                        rows.append((tid, label, docs, count))
+                    if by_count:
+                        rows.sort(key=lambda row: -row[3])
+                    for tid, label, docs, count in rows:
+                        parent = self.add_tree_node(tree, None, label, {"kind": "theme", "theme_id": tid},
+                            colour=colours.get(tid), count=count,
+                            detail=f"{label}\n{_plural(count, 'passage')} in {_plural(len(docs), 'document')}")
                         if docs:
                             parent.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
                 # Re-open what was open before; parents first so their rows exist.
@@ -144,12 +272,14 @@ class TreePanelMixin:
                 tree.blockSignals(False)
         finally:
             self._rebuilding_trees = False
+        self.filter_tree()
         self.refresh_layers()
 
     def add_group_node(self, tree, parent, theme, document, label):
         count = len(self._navigation_groups[(theme, document)])
-        item = self.add_tree_node(tree, parent, f"{label} ({count} {'passage' if count == 1 else 'passages'})",
-            {"kind": "group", "theme_id": theme, "document_id": document})
+        colour = self._nav_colours.get(theme) if tree is self.document_tree else None
+        item = self.add_tree_node(tree, parent, label, {"kind": "group", "theme_id": theme, "document_id": document},
+            colour=colour, count=count, detail=f"{label}\n{_plural(count, 'passage')}")
         item.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
 
     def populate_children(self, item):
@@ -170,16 +300,20 @@ class TreePanelMixin:
             return
         if kind == "theme":
             tid = data["theme_id"]
-            for doc, name in self._nav_documents:
-                if (tid, doc) in self._navigation_groups:
-                    self.add_group_node(tree, item, tid, doc, name)
+            docs = [(doc, name) for doc, name in self._nav_documents if (tid, doc) in self._navigation_groups]
+            if self.tree_sort.currentIndex() == 0:
+                docs.sort(key=lambda row: -len(self._navigation_groups[(tid, row[0])]))
+            for doc, name in docs:
+                self.add_group_node(tree, item, tid, doc, name)
             return
         if kind != "group":
             return
         for number, (_aid, doc, _name, start, end, preview) in enumerate(self._navigation_groups.get((data["theme_id"], data["document_id"]), []), 1):
-            node = self.add_tree_node(tree, item, f"Passage {number}: {preview}",
+            short = " ".join(preview.split())
+            short = short if len(short) <= 120 else short[:119] + "…"
+            node = self.add_tree_node(tree, item, f"Passage {number}\n{short}",
                 {"kind": "passage", "theme_id": data["theme_id"], "document_id": doc, "start": start, "end": end})
-            node.setToolTip(0, f"Source characters [{start}, {end})\n{preview}")
+            node.setToolTip(0, preview)
 
     def tree_clicked(self, item, _column):
         # Reactivate an already selected node after a document-dropdown change.

@@ -6,7 +6,7 @@ from qualitative_themes.storage.documents import import_document
 from qualitative_themes.storage.coding import create_theme, add_coding
 
 
-def test_browser_collapse_preserves_passage_selection(qt_test_application, tmp_path):
+def test_tree_collapse_preserves_passage_selection(qt_test_application, tmp_path):
     directory=create_project(tmp_path/'project','Collapse').directory
     source=tmp_path/'source.txt';source.write_text('A clinic provides medication and treatment.\n\nPatients describe travel costs.')
     doc=import_document(directory,source).document_id
@@ -18,13 +18,16 @@ def test_browser_collapse_preserves_passage_selection(qt_test_application, tmp_p
     workspace.populate_passages(group)
     workspace.tree_selected(group.child(0));before=workspace.viewer.textCursor().selectedText()
     selected=workspace._navigation.copy();width=workspace.viewer.width()
-    workspace.browse_toggle.setChecked(False);qt_test_application.processEvents()
-    assert workspace.evidence_browser.isHidden()
+    workspace.tree_collapse_button.click();qt_test_application.processEvents()
+    assert workspace.tree_collapsed() and workspace.evidence_browser.width()<=60
     assert workspace.viewer.width()>width
+    assert 'Healthcare access' in workspace.tree_strip_label.text()
     assert workspace._navigation==selected and workspace.viewer.textCursor().selectedText()==before
-    workspace.browse_toggle.setChecked(True);qt_test_application.processEvents()
-    assert not workspace.evidence_browser.isHidden()
+    view=workspace.capture_view();assert view['tree_collapsed'] is True
+    workspace.toggle_tree();qt_test_application.processEvents()
+    assert not workspace.tree_collapsed() and workspace.evidence_browser.width()>60
     assert workspace._navigation==selected and len(workspace.viewer.extraSelections())==1
+    workspace.restore_view(view);assert workspace.tree_collapsed()
     workspace.close()
 
 
@@ -38,8 +41,8 @@ def test_action_menus_forward_actions_and_follow_button_state(qt_test_applicatio
     workspace.sync_action_menus();assert action.isEnabled()
     action.trigger();assert seen==['history']
     workspace.history_button.setEnabled(False);workspace.sync_action_menus();assert not action.isEnabled()
-    assert workspace.history_button.isHidden()
-    assert workspace.refine_button.isHidden()
+    assert workspace.history_button.isHidden()  # reached from the ⋯ menu
+    assert not workspace.refine_button.isHidden()  # Adjust themes sits in the bar
     workspace.close()
 
 

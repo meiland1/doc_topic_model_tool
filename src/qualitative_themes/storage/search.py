@@ -106,7 +106,7 @@ def search(directory: Path, query: str, *, document_ids=None, theme_ids=None, ru
         if include_comments:
             for doc, name, start, end, quote, body in conn.execute("""SELECT c.document_id, d.original_name,
                     c.start_char, c.end_char, c.quote, c.body
-                    FROM comments c JOIN documents d ON d.id=c.document_id WHERE c.state != 'draft'
+                    FROM comments c JOIN documents d ON d.id=c.document_id WHERE c.state != 'draft' AND c.scope = 'passage'
                     ORDER BY d.imported_at, d.rowid, c.start_char"""):
                 if doc not in relevant or not pattern.search(body):
                     continue

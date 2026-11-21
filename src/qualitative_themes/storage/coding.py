@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from qualitative_themes.storage.comments import move_theme as move_comments_to_theme
 from qualitative_themes.storage.database import connect
 
 
@@ -240,12 +241,12 @@ def effective_assignments_from_connection(conn, theme_id, run_id=None):
 
 
 def merge_themes(directory: Path, source_id: str, target_id: str) -> None:
-    """Move source work into target; retain duplicate provenance and notes.
+    """Move source work into target; retain duplicate provenance and comments.
 
     Pre: two different active themes.
     Post: source has status 'merged' (merged_into_id = target). Codings that
-    already exist on target at the same range become 'merged_duplicate' and
-    their notes move to the surviving coding.
+    already exist on target at the same range become 'merged_duplicate'.
+    Comments on or tagged with the source theme now belong to the target.
     """
     if source_id == target_id:
         raise ValueError("Choose two different themes to merge.")
@@ -256,61 +257,14 @@ def merge_themes(directory: Path, source_id: str, target_id: str) -> None:
         for coding_id, doc_id, start, end, state in rows:
             duplicate = conn.execute("SELECT id FROM codings WHERE theme_id = ? AND document_id = ? AND start_char = ? AND end_char = ? AND state = ? ORDER BY created_at, rowid LIMIT 1", (target_id, doc_id, start, end, state)).fetchone()
             if duplicate:
-                conn.execute("UPDATE notes SET coding_id = ? WHERE coding_id = ?", (duplicate[0], coding_id))
                 conn.execute("UPDATE codings SET state = 'merged_duplicate' WHERE id = ?", (coding_id,))
             else:
                 conn.execute("UPDATE codings SET theme_id = ? WHERE id = ?", (target_id, coding_id))
-        conn.execute("UPDATE notes SET theme_id = ? WHERE theme_id = ?", (target_id, source_id))
+        move_comments_to_theme(conn, source_id, target_id)
         conn.execute("UPDATE model_suggestions SET theme_id = ? WHERE theme_id = ?", (target_id, source_id))
         conn.execute("UPDATE themes SET status = 'merged', merged_into_id = ? WHERE id = ?", (target_id, source_id))
         _event(conn, "themes_merged", {"source_id": source_id, "target_id": target_id,
                                        "source_label": source_label, "target_label": target_label})
-
-
-def add_note(directory: Path, body: str, *, document_id: str | None = None,
-             theme_id: str | None = None, coding_id: str | None = None) -> str:
-    """Attach a memo to exactly one of: a document, a theme, or an active coding."""
-    body = body.strip()
-    if not body or sum(x is not None for x in (document_id, theme_id, coding_id)) != 1:
-        raise ValueError("Write a note and choose exactly one document, theme, or passage.")
-    note_id = str(uuid4())
-    with connect(directory) as conn:
-        if theme_id:
-            _active_theme(conn, theme_id)
-        if document_id and not conn.execute("SELECT 1 FROM documents WHERE id = ?", (document_id,)).fetchone():
-            raise ValueError("Document not found.")
-        if coding_id and not conn.execute("SELECT 1 FROM codings WHERE id = ? AND state = 'active'", (coding_id,)).fetchone():
-            raise ValueError("Active passage coding not found.")
-        conn.execute("INSERT INTO notes(id, document_id, theme_id, coding_id, body, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                     (note_id, document_id, theme_id, coding_id, body, datetime.now(timezone.utc).isoformat()))
-        _event(conn, "note_added", {"note_id": note_id, "document_id": document_id,
-                                    "theme_id": theme_id, "coding_id": coding_id})
-    return note_id
-
-
-def update_note(directory: Path, note_id: str, body: str) -> None:
-    body = body.strip()
-    if not body:
-        raise ValueError("A note cannot be empty.")
-    with connect(directory) as conn:
-        old = conn.execute("SELECT body FROM notes WHERE id = ?", (note_id,)).fetchone()
-        if old is None:
-            raise ValueError("Note not found.")
-        if old[0] == body:
-            return
-        conn.execute("UPDATE notes SET body = ? WHERE id = ?", (body, note_id))
-        _event(conn, "note_updated", {"note_id": note_id, "old": old[0], "new": body})
-
-
-def list_notes(directory: Path, *, document_id: str | None = None,
-               theme_id: str | None = None, coding_id: str | None = None) -> list[tuple[str, str]]:
-    """Rows are (note_id, body) for exactly one target, oldest first."""
-    args = [x for x in (document_id, theme_id, coding_id) if x is not None]
-    if len(args) != 1:
-        raise ValueError("Choose one note target.")
-    field = "document_id" if document_id else "theme_id" if theme_id else "coding_id"
-    with connect(directory) as conn:
-        return conn.execute(f"SELECT id, body FROM notes WHERE {field} = ? ORDER BY created_at, rowid", args).fetchall()
 
 
 def themes_for_range(directory: Path, document_id: str, start: int, end: int, run_id: str | None = None) -> list[str]:
@@ -333,11 +287,3 @@ def assignment_origin(directory: Path, assignment_id: str) -> str:
     """'researcher' if the id is a codings row, otherwise 'model' (a model_suggestions id)."""
     with connect(directory) as conn:
         return "researcher" if conn.execute("SELECT 1 FROM codings WHERE id=?", (assignment_id,)).fetchone() else "model"
-
-
-def passage_notes(directory: Path, document_id: str, theme_id: str, start: int, end: int):
-    """Includes retained notes on previously removed researcher codings."""
-    with connect(directory) as conn:
-        return conn.execute("""SELECT n.id, n.body FROM notes n JOIN codings c ON c.id=n.coding_id
-            WHERE c.document_id=? AND c.theme_id=? AND c.start_char=? AND c.end_char=?
-            ORDER BY n.created_at, n.rowid""", (document_id, theme_id, start, end)).fetchall()

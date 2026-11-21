@@ -17,7 +17,7 @@ from qualitative_themes.storage.database import connect
 
 VIEW_KEYS = ("map", "heatmap", "hierarchy")
 # Tables whose changes don't affect the plots.
-_IGNORED = {"comments", "reading_marks", "notes", "documents_fts", "app_meta"}
+_IGNORED = {"comments", "reading_marks", "documents_fts", "app_meta"}
 
 
 def coding_fingerprint(directory: Path, run_id: str) -> str:

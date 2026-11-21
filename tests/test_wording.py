@@ -27,6 +27,9 @@ RETIRED = [
     "Open evidence in", "RECENT PROJECTS", "Advanced local setup", "Add naming model…",
     "Recover a recent project", "Restore a project backup", "Automatic recovery snapshots",
     "Create recovery snapshot now", "Recover from snapshot", "Restore project backup",
+    # Stage 3: memos became comments; the passage list and faint themes became the tree collapse and Highlight.
+    "Memos", "Research notes", "Save new note", "Hide passage list", "Show other themes faintly",
+    "Keep this suggestion",
 ]
 
 
