@@ -44,7 +44,8 @@ class ThemeCard(QFrame):
         name.setWordWrap(True)
         header.addWidget(name, 1)
         layout.addLayout(header)
-        spread = QLabel(f"{theme['passages']} passages · {theme['documents']} documents")
+        spread = QLabel(f"{theme['passages']} passage{'s' if theme['passages'] != 1 else ''} · "
+                        f"{theme['documents']} document{'s' if theme['documents'] != 1 else ''}")
         spread.setObjectName("quiet")
         layout.addWidget(spread)
         if theme["ungrouped"]:

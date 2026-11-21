@@ -87,8 +87,9 @@ License notices are copied to `resources/LICENSES/` and shipped inside the app.
 ## Before the first public release
 
 - Add a `LICENSE` file for the project itself.
-- Ollama 0.12.11 asset names were confirmed (`ollama-windows-amd64.zip`,
-  `ollama-darwin.tgz`, `ollama-linux-amd64.tgz`); recheck if you change the pin.
+- The engine is pinned to Ollama 0.40.16 (0.12.11 before 0.3.0). The script tries the
+  file names in `ENGINE_ASSETS` in order and stops with a clear message if none is in the
+  release; check them on the release page whenever you change the pin.
 - Check the final installer size (must be under 2 GiB) and test naming on a
   16 GB and an 8 GB machine.
 - Install on a clean Windows and Mac with Wi-Fi off and run the sample project.

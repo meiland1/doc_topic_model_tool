@@ -13,7 +13,18 @@ def analysis_title(settings_json, completed_at):
     settings = json.loads(settings_json) if isinstance(settings_json, str) else settings_json
     unit = settings.get('analysis_unit', '')
     return settings.get("display_name") or (
-        f"Analysis {(completed_at or '')[:19].replace('T', ' ')} · {UNIT_LABELS.get(unit, unit or 'Passages')}")
+        f"Analysis {_local_time(completed_at)} · {UNIT_LABELS.get(unit, unit or 'Passages')}")
+
+
+def _local_time(stamp):
+    # Stored as UTC; show it the way the computer's clock reads.
+    try:
+        moment = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return (stamp or "")[:19].replace("T", " ")
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def rename_analysis(directory, run_id, name):
