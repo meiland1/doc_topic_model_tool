@@ -12,8 +12,9 @@ from qualitative_themes.analysis.refinement import (
 )
 from qualitative_themes.analysis.topics import AnalysisCancelled, TopicOutput, analyze, list_analysis_runs
 from qualitative_themes.analysis.settings import AnalysisSettings
+from qualitative_themes.storage.comments import Target, add_comment, list_comments
 from qualitative_themes.storage.coding import (
-    add_coding, add_note, create_theme, effective_assignments, list_notes, list_themes,
+    add_coding, create_theme, effective_assignments, list_themes,
     merge_themes, occurrences, reject_model_suggestion, remove_coding, rename_theme,
 )
 from qualitative_themes.storage.database import connect, create_project, open_project
@@ -63,7 +64,7 @@ class RefinementTests(unittest.TestCase):
     def manual_snapshot(self):
         with connect(self.directory) as conn:
             return {table: conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()
-                    for table in ("codings", "notes")}
+                    for table in ("codings", "comments")}
 
     def test_preview_and_cancel_leave_original_and_manual_list_unchanged(self):
         before = list_themes(self.directory, self.run)
@@ -93,15 +94,15 @@ class RefinementTests(unittest.TestCase):
             info = json.loads(conn.execute("SELECT model_info_json FROM analysis_runs WHERE id=?", (proposal,)).fetchone()[0])
             self.assertTrue(all(words[0][0] == "refreshed" for words in info["keywords"].values()))
 
-    def test_rerun_preserves_labels_notes_additions_and_rejections(self):
+    def test_rerun_preserves_labels_comments_additions_and_rejections(self):
         theme = self.mapping(self.run)["0"]
         rename_theme(self.directory, theme, "Researcher access")
         hits = occurrences(self.directory, theme, self.run)
         first, second = hits[:2]
-        coding = add_coding(self.directory, first[1], first[3], first[4], theme)
-        add_note(self.directory, "Passage memo", coding_id=coding)
-        add_note(self.directory, "Theme memo", theme_id=theme)
-        add_note(self.directory, "Document memo", document_id=self.doc)
+        add_coding(self.directory, first[1], first[3], first[4], theme)
+        add_comment(self.directory, Target.passage(first[1], first[3], first[4], theme), "Passage comment")
+        add_comment(self.directory, Target.theme(theme), "Theme comment")
+        add_comment(self.directory, Target.document(self.doc), "Document comment")
         reject_model_suggestion(self.directory, second[1], second[3], second[4], theme)
         seed = create_theme(self.directory, "Manual seed")
         add_coding(self.directory, self.doc, 0, 5, seed)
@@ -113,7 +114,7 @@ class RefinementTests(unittest.TestCase):
         self.assertIn("Researcher access", [label for _, label, _ in list_themes(self.directory, proposal)])
         self.assertIn(seed, {tid for tid, _, _ in list_themes(self.directory, proposal)})
         open_project(self.directory)
-        self.assertEqual(list_notes(self.directory, theme_id=theme)[0][1], "Theme memo")
+        self.assertEqual([c.body for c, _ in list_comments(self.directory, theme_id=theme)], ["Theme comment", "Passage comment"])
 
     def test_topic_numbers_never_define_identity(self):
         original = self.mapping(self.run)

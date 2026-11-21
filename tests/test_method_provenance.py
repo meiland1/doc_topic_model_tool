@@ -61,7 +61,7 @@ class MethodProvenanceTests(unittest.TestCase):
 
     def test_csv_json_and_manual_exports(self):
         data=build_export(self.directory,self.run)
-        self.assertEqual(data['metadata']['format_version'],2)
+        self.assertEqual(data['metadata']['format_version'],3)
         self.assertEqual(data['metadata']['analysis_method'],'zero_shot')
         entry=next(t for t in data['themes'] if t['theme_id']==self.topics[0])
         self.assertEqual(entry['label_source'],'predefined')

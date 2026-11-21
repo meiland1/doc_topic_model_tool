@@ -161,8 +161,9 @@ class FindBar(QFrame):
 
 
 class SelectionToolbar(QFrame):
-    """Floating bar shown over selected text: code it as a theme, or comment."""
+    """Floating bar shown over selected text: code it as a theme (or a new one), or comment."""
     code_requested = Signal(str)
+    new_theme_requested = Signal()
     comment_requested = Signal()
 
     def __init__(self, parent=None):
@@ -207,6 +208,11 @@ class SelectionToolbar(QFrame):
             action.triggered.connect(lambda _c=False, t=tid: self.code_requested.emit(t))
         more.setMenu(menu)
         self.layout_.addWidget(more)
+        new = QPushButton("+ New theme")
+        new.setObjectName("toolbarButton")
+        new.setToolTip("Make a new theme and code the selection as it")
+        new.clicked.connect(self.new_theme_requested)
+        self.layout_.addWidget(new)
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.VLine)
         divider.setObjectName("toolbarDivider")

@@ -144,7 +144,7 @@ class RefinementReviewDialog(QDialog):
         summary.setWordWrap(True)
         layout.addWidget(summary)
         help_text = QLabel("Each row is an adjusted theme. Match it to an earlier theme to carry that theme's name, "
-            "notes, coding and rejected passages forward, or keep it as a new theme. Each earlier theme can be "
+            "comments, coding and rejected passages forward, or keep it as a new theme. Each earlier theme can be "
             "matched once. Names you gave themes are never replaced. Nothing you've done is lost: an earlier theme "
             "that isn't matched stays in its original analysis.")
         help_text.setWordWrap(True)
@@ -185,7 +185,7 @@ class RefinementReviewDialog(QDialog):
         self.identity_summary.setWordWrap(True)
         layout.addWidget(self.identity_summary)
         decisions = QLabel("Research decisions in earlier themes:\n" + ("\n".join(
-            f"• {item['label']}: {item['codings']} coding decisions, {item['notes']} notes" for item in review["human_decisions"])
+            f"• {item['label']}: {item['codings']} coding decisions, {item['comments']} comments" for item in review["human_decisions"])
             or "No theme-specific human decisions recorded.") +
             "\nDifferent passage sizes do not relocate exact-range rejections; earlier decisions stay saved for inspection.")
         decisions.setWordWrap(True)

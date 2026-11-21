@@ -59,7 +59,8 @@ def build_export(directory, run_id=None, progress=None, should_cancel=None):
         doc_order = {doc: index for index, doc in enumerate(documents)}
         theme_rows = conn.execute("SELECT id,coalesce(user_label,generated_label,'Unnamed theme'),description,creation_source,user_label FROM themes WHERE status='active' ORDER BY lower(coalesce(user_label,generated_label,'Unnamed theme')),id").fetchall()
         visible = {r[0] for r in conn.execute("SELECT theme_id FROM model_suggestions WHERE run_id=?", (run_id,))} if run_id else set()
-        notes = conn.execute("SELECT n.id,n.document_id,n.theme_id,n.coding_id,n.body,n.created_at,c.document_id,c.theme_id,c.start_char,c.end_char,c.state FROM notes n LEFT JOIN codings c ON c.id=n.coding_id ORDER BY n.created_at,n.rowid").fetchall()
+        comment_rows = conn.execute("SELECT id,parent_id,scope,document_id,theme_id,start_char,end_char,quote,body,state,pinned,created_at "
+                                    "FROM comments WHERE state != 'draft' ORDER BY created_at,rowid").fetchall()
         page_spans = {}
         text_cache = {}
         def evidence(doc, start, end):
@@ -75,15 +76,28 @@ def build_export(directory, run_id=None, progress=None, should_cancel=None):
                     "pages": sorted({s[0] for s in spans if s[0] is not None}),
                     "paragraphs": sorted({s[1] for s in spans if s[1] is not None}),
                     "start_char": start, "end_char": end, "quote": text[start:end]}
-        doc_notes, theme_notes, coding_notes = {}, {}, {}
-        for nid, did, tid, cid, body, created, cdoc, ctheme, start, end, state in notes:
-            note = {"id": nid, "body": body, "created_utc": created}
-            if did:
-                doc_notes.setdefault(did, []).append(note)
-            if tid:
-                theme_notes.setdefault(tid, []).append(note)
-            if cid:
-                coding_notes.setdefault((ctheme, cdoc, start, end), []).append({**note, "coding_state": state})
+        # Threads (root + replies) grouped by what they're on. Passage comments are
+        # matched to every exported passage they overlap.
+        threads, project_comments, theme_comments, doc_comments, passage_comments = {}, [], {}, {}, {}
+        for cid, parent, kind, did, tid, start, end, quote, body, state, pinned, created in comment_rows:
+            if parent:
+                if parent in threads:
+                    threads[parent]["replies"].append({"id": cid, "body": body, "created_utc": created})
+                continue
+            thread = {"id": cid, "scope": kind, "body": body, "state": state, "pinned": bool(pinned),
+                      "created_utc": created, "replies": []}
+            threads[cid] = thread
+            if kind == "project":
+                project_comments.append(thread)
+            elif kind == "theme":
+                theme_comments.setdefault(tid, []).append(thread)
+            elif kind == "document":
+                doc_comments.setdefault(did, []).append(thread)
+            else:
+                thread.update({"start_char": start, "end_char": end, "quote": quote})
+                passage_comments.setdefault(did, []).append(thread)
+        def comments_on(doc, start, end):
+            return [c for c in passage_comments.get(doc, ()) if c["start_char"] < end and start < max(c["end_char"], c["start_char"] + 1)]
         representatives = {}
         if run_id:
             rows = conn.execute("SELECT m.theme_id,m.bertopic_id,s.id,s.document_id,s.start_char,s.end_char FROM model_suggestions m JOIN segments s ON s.id=m.segment_id WHERE m.run_id=?", (run_id,)).fetchall()
@@ -111,23 +125,23 @@ def build_export(directory, run_id=None, progress=None, should_cancel=None):
                      "keywords": words, "unique_coded_ranges": len(set(keys)),
                      "documents_covered": len(covered), "documents": [documents[doc]["name"] for doc in covered],
                      "representative_evidence": [evidence(*key) for key in selected],
-                     "theme_notes": theme_notes.get(tid, []),
-                     "passage_notes": [note for key in keys for note in coding_notes.get((tid, *key), [])],
-                     "document_notes": [{"document": documents[doc]["name"], **note} for doc in covered for note in doc_notes.get(doc, [])]}
+                     "theme_comments": theme_comments.get(tid, []),
+                     "passage_comments": list({c["id"]: c for key in keys for c in comments_on(*key)}.values()),
+                     "document_comments": [{"document": documents[doc]["name"], **c} for doc in covered for c in doc_comments.get(doc, [])]}
             codebook.append(entry)
             for aid, doc, start, end, origin in assignments:
                 key = doc, start, end
                 group = range_groups.setdefault(key, [])
                 group.append({"topic_origin": origin_text(provenance), "topic_origins": provenance["origins"],
                               "supplied_category_names": provenance["supplied_names"], "theme_id": tid, "theme": label, "source": origin,
-                              "assignment_id": aid, "notes": coding_notes.get((tid, doc, start, end), [])})
+                              "assignment_id": aid})
         passages = []
         for key in sorted(range_groups, key=lambda key: (doc_order[key[0]], key[1], key[2])):
             check()
             assignments = range_groups[key]
             passage = evidence(*key)
             passage.update({"themes": [row["theme"] for row in assignments], "assignments": assignments,
-                            "document_notes": doc_notes.get(key[0], [])})
+                            "comments": comments_on(*key), "document_comments": doc_comments.get(key[0], [])})
             passages.append(passage)
         embedding = info.get("embedding_identity") or info.get("source_model_identity") or {}
         attempts = info.get("labeling_attempts", [])
@@ -135,7 +149,7 @@ def build_export(directory, run_id=None, progress=None, should_cancel=None):
         if run_id:
             for tid, topic in conn.execute("SELECT theme_id,bertopic_id FROM model_suggestions WHERE run_id=?", (run_id,)):
                 topic_ids.setdefault(tid, set()).add(topic)
-        metadata = {"outlier_theme_ids": [tid for tid, topics in topic_ids.items() if topics == {-1}], "format_version": 2, "exported_utc": datetime.now(timezone.utc).isoformat(),
+        metadata = {"outlier_theme_ids": [tid for tid, topics in topic_ids.items() if topics == {-1}], "format_version": 3, "exported_utc": datetime.now(timezone.utc).isoformat(),
                     "project": project[1], "project_id": project[0], "analysis": title,
                     "analysis_id": run_id, "completed_utc": completed,
                     "analysis_unit": settings.get("analysis_unit", "Manual ranges"),
@@ -149,8 +163,14 @@ def build_export(directory, run_id=None, progress=None, should_cancel=None):
                     "theme_count_definition": THEME_COUNTS, "unique_ranges": len(passages),
                     "theme_assignments": sum(len(row["assignments"]) for row in passages),
                     "coding_scope": ("Active researcher codings plus non-rejected model suggestions from the selected run; researcher coding takes precedence at identical theme/range." if run_id else "Active researcher codings across the project; unaccepted model suggestions excluded."),
-                    "notes_policy": "Retained notes on earlier removed coding records are included when the exact range/theme is currently active and carry their coding_state."}
+                    "project_comments": project_comments,
+                    "comments_policy": "Passage comments are listed with every exported passage they overlap. Resolved comments are included with state 'resolved'; drafts are not."}
     return {"metadata": metadata, "themes": codebook, "passages": passages}
+
+
+def _thread_text(thread):
+    """A comment and its replies as plain text for one CSV cell."""
+    return "\n".join([thread["body"], *("  ↳ " + reply["body"] for reply in thread["replies"])])
 
 
 def _destination(directory, destination):
@@ -207,14 +227,14 @@ def write_codebook(directory, run_id, destination, progress=None, should_cancel=
     elif destination.suffix.lower() == ".csv":
         context = _context(data["metadata"])
         fields = ["topic_origin", "topic_origins", "supplied_category_names", "theme", "description", "keywords", "unique_coded_ranges", "documents_covered", "documents", "label_source",
-                  "representative_evidence", "theme_notes", "passage_notes", "document_notes", "theme_id", *context, "count_definition"]
+                  "representative_evidence", "theme_comments", "passage_comments", "document_comments", "theme_id", *context, "count_definition"]
         def write(stream):
             writer = csv.DictWriter(stream, fieldnames=fields)
             writer.writeheader()
             for entry in data["themes"]:
                 _check_cancel(should_cancel)
                 row = dict(entry)
-                for key in ["topic_origins", "supplied_category_names", "keywords", "documents", "representative_evidence", "theme_notes", "passage_notes", "document_notes"]:
+                for key in ["topic_origins", "supplied_category_names", "keywords", "documents", "representative_evidence", "theme_comments", "passage_comments", "document_comments"]:
                     row[key] = json.dumps(row[key], ensure_ascii=False)
                 writer.writerow({**row, **context, "count_definition": THEME_COUNTS})
         _write_atomic(destination, write, "utf-8-sig", should_cancel)
@@ -234,19 +254,18 @@ def write_coded_passages(directory, run_id, destination, progress=None, should_c
     data = build_export(directory, run_id, progress, should_cancel)
     context = _context(data["metadata"])
     fields = ["document", "document_status", "pages", "paragraphs", "start_char", "end_char", "quote", "themes",
-              "assignment_source", "passage_notes", "document_notes", "assignments_json", "document_id", "source_hash", *context, "count_definition"]
+              "assignment_source", "passage_comments", "document_comments", "assignments_json", "document_id", "source_hash", *context, "count_definition"]
     def write(stream):
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
         for passage in data["passages"]:
             _check_cancel(should_cancel)
-            notes = {note["id"]: note for assignment in passage["assignments"] for note in assignment["notes"]}
             row = {key: passage[key] for key in ["document", "document_status", "start_char", "end_char", "quote", "document_id", "source_hash"]}
             row.update({"pages": "; ".join(map(str, passage["pages"])), "paragraphs": "; ".join(map(str, passage["paragraphs"])),
                         "themes": json.dumps(passage["themes"], ensure_ascii=False),
                         "assignment_source": "; ".join(dict.fromkeys(assignment["source"] for assignment in passage["assignments"])),
-                        "passage_notes": "\n\n".join(note["body"] for note in notes.values()),
-                        "document_notes": "\n\n".join(note["body"] for note in passage["document_notes"]),
+                        "passage_comments": "\n\n".join(_thread_text(c) for c in passage["comments"]),
+                        "document_comments": "\n\n".join(_thread_text(c) for c in passage["document_comments"]),
                         "assignments_json": json.dumps(passage["assignments"], ensure_ascii=False), **context, "count_definition": RANGE_COUNTS})
             writer.writerow(row)
     _write_atomic(destination, write, "utf-8-sig", should_cancel)

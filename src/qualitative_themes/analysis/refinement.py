@@ -54,13 +54,13 @@ def _event(conn, kind, details):
 
 def _fingerprint(conn, source_id):
     # Proposed themes are excluded; edits to real research decisions invalidate review.
-    """Hash of the source run plus all codings/notes/themes; changes invalidate a proposal."""
+    """Hash of the source run plus all codings/comments/themes; changes invalidate a proposal."""
     data = {
         "run": conn.execute("SELECT settings_json,model_info_json,status FROM analysis_runs WHERE id=?", (source_id,)).fetchall(),
         "suggestions": conn.execute("SELECT id,theme_id,bertopic_id FROM model_suggestions WHERE run_id=? ORDER BY id", (source_id,)).fetchall(),
         "themes": conn.execute("SELECT * FROM themes WHERE status NOT IN ('proposed','discarded') ORDER BY id").fetchall(),
         "codings": conn.execute("SELECT * FROM codings ORDER BY id").fetchall(),
-        "notes": conn.execute("SELECT * FROM notes ORDER BY id").fetchall(),
+        "comments": conn.execute("SELECT id,theme_id,state FROM comments WHERE theme_id IS NOT NULL ORDER BY id").fetchall(),
         "sources": conn.execute("SELECT id,source_hash,canonical_text,extraction_status FROM documents ORDER BY id").fetchall(),
     }
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
@@ -372,10 +372,10 @@ def review_proposal(directory, proposal_id):
         for oid in old:
             label, count, note_count, user = conn.execute("""SELECT coalesce(t.user_label,t.generated_label),
                 (SELECT count(*) FROM codings WHERE theme_id=t.id),
-                (SELECT count(*) FROM notes WHERE theme_id=t.id OR coding_id IN (SELECT id FROM codings WHERE theme_id=t.id)),
+                (SELECT count(*) FROM comments WHERE theme_id=t.id AND parent_id IS NULL AND state != 'draft'),
                 t.user_label FROM themes t WHERE t.id=?""", (oid,)).fetchone()
             if count or note_count or user is not None:
-                human.append({"theme_id": oid, "label": label, "codings": count, "notes": note_count,
+                human.append({"theme_id": oid, "label": label, "codings": count, "comments": note_count,
                               "matched": oid in set(recommended.values())})
         return {"proposal_id": proposal_id, "source_id": source_id, "operation": info["refinement_operation"],
                 "themes": items, "old_theme_count": len(old) - len(old_outlier_themes),

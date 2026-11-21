@@ -9,8 +9,9 @@ from qualitative_themes.analysis.topics import (
     AnalysisCancelled, AnalysisSettings, TopicOutput, analyze, list_analysis_runs,
     prepare_passages, save_result,
 )
+from qualitative_themes.storage.comments import Target, add_comment, list_comments
 from qualitative_themes.storage.coding import (
-    add_coding, add_note, create_theme, effective_assignments, list_notes, list_themes,
+    add_coding, create_theme, effective_assignments, list_themes,
     merge_themes, occurrences, reject_model_suggestion, remove_coding, rename_theme,
 )
 from qualitative_themes.storage.database import connect, create_project, open_project
@@ -73,7 +74,7 @@ class AnalysisRepositoryTests(unittest.TestCase):
         add_coding(self.directory, self.docs[0], 0, 10, theme)
         add_coding(self.directory, self.docs[1], 0, 10, theme)
         add_coding(self.directory, self.docs[0], 11, 20, other)
-        note = add_note(self.directory, "Preserve this memo", theme_id=other)
+        note = add_comment(self.directory, Target.theme(other), "Preserve this comment")
         run, _ = analyze(self.directory, "Paragraphs", [self.docs[1]], settings=AnalysisSettings(min_topic_size=2), backend=self.fake)
         scoped = {tid: count for tid, _, count in list_themes(self.directory, run)}
         self.assertNotIn(other, scoped)
@@ -81,7 +82,7 @@ class AnalysisRepositoryTests(unittest.TestCase):
         self.assertEqual({row[1] for row in occurrences(self.directory, theme, run)}, {self.docs[1]})
         self.assertEqual(len(effective_assignments(self.directory, theme)), 2)
         self.assertIn(other, {row[0] for row in list_themes(self.directory)})
-        self.assertEqual(list_notes(self.directory, theme_id=other)[0][0], note)
+        self.assertEqual(list_comments(self.directory, theme_id=other)[0][0].id, note)
         first, _ = analyze(self.directory, "Paragraphs", [self.docs[0]], settings=AnalysisSettings(min_topic_size=2), backend=self.fake)
         self.assertIn(other, {row[0] for row in list_themes(self.directory, first)})
 
@@ -143,12 +144,12 @@ class AnalysisRepositoryTests(unittest.TestCase):
         old = self.run_fake()
         theme = self.mapping(old)["0"]
         _, doc, _, start, end, _ = occurrences(self.directory, theme, old)[0]
-        coding = add_coding(self.directory, doc, start, end, theme)
-        note = add_note(self.directory, "Researcher interpretation", coding_id=coding)
+        add_coding(self.directory, doc, start, end, theme)
+        note = add_comment(self.directory, Target.passage(doc, start, end, theme), "Researcher interpretation")
         rename_theme(self.directory, theme, "My interpretation")
         new = self.run_fake()
         self.assertNotEqual(self.mapping(new)["0"], theme)
-        self.assertEqual(list_notes(self.directory, coding_id=coding), [(note, "Researcher interpretation")])
+        self.assertEqual([(c.id, c.body) for c, _ in list_comments(self.directory, theme_id=theme)], [(note, "Researcher interpretation")])
         self.assertIn((theme, "My interpretation", 1), list_themes(self.directory, new))
         self.assertEqual(len(occurrences(self.directory, theme, new)), 1)
 

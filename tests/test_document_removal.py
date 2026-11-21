@@ -5,7 +5,8 @@ import unittest
 
 from qualitative_themes.analysis.topics import AnalysisSettings, TopicOutput, analyze, prepare_passages
 from qualitative_themes.analysis.refinement import propose_refinement, review_proposal, cancel_proposal
-from qualitative_themes.storage.coding import add_coding, add_note, create_theme, list_notes, occurrences
+from qualitative_themes.storage.coding import add_coding, create_theme, occurrences
+from qualitative_themes.storage.comments import Target, add_comment, list_comments
 from qualitative_themes.storage.database import connect, create_project, open_project
 from qualitative_themes.storage.documents import (
     get_document, import_document, list_documents, remove_documents, restore_documents,
@@ -30,14 +31,14 @@ class DocumentRemovalTests(unittest.TestCase):
             return TopicOutput([i % 2 for i in range(len(passages))], {0: [("research", .8)], 1: [("evidence", .7)]})
         self.run, _ = analyze(self.directory, "Paragraphs", self.docs, self.settings, backend=fake)
         self.theme = create_theme(self.directory, "Manual evidence")
-        coding = add_coding(self.directory, self.docs[0], 0, 10, self.theme)
-        add_note(self.directory, "Keep this passage memo", coding_id=coding)
-        add_note(self.directory, "Keep this document memo", document_id=self.docs[0])
+        add_coding(self.directory, self.docs[0], 0, 10, self.theme)
+        add_comment(self.directory, Target.passage(self.docs[0], 0, 10, self.theme), "Keep this passage comment")
+        add_comment(self.directory, Target.document(self.docs[0]), "Keep this document comment")
 
     def saved_research(self):
         with connect(self.directory) as conn:
             return {table: conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()
-                    for table in ["document_pages", "analysis_runs", "segments", "model_suggestions", "themes", "codings", "notes"]}
+                    for table in ["document_pages", "analysis_runs", "segments", "model_suggestions", "themes", "codings", "comments"]}
 
     def test_remove_hides_document_but_preserves_all_evidence(self):
         before = self.saved_research()
@@ -50,7 +51,8 @@ class DocumentRemovalTests(unittest.TestCase):
         self.assertEqual(get_document(self.directory, self.docs[0]), text)
         self.assertEqual({p: p.read_bytes() for p in source_files}, source_files)
         self.assertEqual(occurrences(self.directory, self.theme)[0][1], self.docs[0])
-        self.assertEqual(list_notes(self.directory, document_id=self.docs[0])[0][1], "Keep this document memo")
+        self.assertEqual([c.body for c, _ in list_comments(self.directory, document_id=self.docs[0])],
+                         ["Keep this document comment", "Keep this passage comment"])
         open_project(self.directory)
         self.assertEqual(len(list_documents(self.directory)), 1)
 

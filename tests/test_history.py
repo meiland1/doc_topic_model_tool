@@ -22,7 +22,7 @@ class HistoryTests(unittest.TestCase):
 
     def stable_data(self):
         with connect(self.directory) as conn:
-            return {table: conn.execute(f'SELECT * FROM {table}').fetchall() for table in ['segments', 'themes', 'codings', 'notes', 'model_suggestions']} | {'info': conn.execute('SELECT model_info_json FROM analysis_runs WHERE id=?', (self.run,)).fetchone()}
+            return {table: conn.execute(f'SELECT * FROM {table}').fetchall() for table in ['segments', 'themes', 'codings', 'comments', 'model_suggestions']} | {'info': conn.execute('SELECT model_info_json FROM analysis_runs WHERE id=?', (self.run,)).fetchone()}
 
     def test_name_persists_without_rewriting_research(self):
         before = self.stable_data()

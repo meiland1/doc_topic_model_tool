@@ -21,7 +21,7 @@ src/qualitative_themes/
     main_window.py      the window and its tabs; its methods are split into
                         project_session.py, documents_page.py, local_setup.py and tasks.py
     workers.py          the worker threads the main window starts
-    read_code/          the Read & code tab, one file per area (trees, reader, coding, notes...)
+    read_code/          the Read & code tab, one file per area (analysis bar, trees, reader, coding, comments)
     settings_form.py    keyword and naming controls shared by the Find themes and Adjust themes dialogs
     menus.py            the File and Edit menus
     strings.py          names that appear in more than one place (tabs, menu items, "Not in any theme")
@@ -111,9 +111,9 @@ Theme naming runs after the analysis is already saved, so naming failing or bein
 
 ### Coding in the workspace
 
-The researcher selects text, then presses a number key, clicks the toolbar or uses Add. `code_selection_as()` (in `gui/read_code/coding_actions.py`) converts the selection to canonical offsets and pushes an `AddCodingCommand` (Ctrl+Z undoes it), which calls `storage.coding.add_coding()`. Then `reload_themes()` redraws from the database. The workspace never keeps its own copy of research decisions, so anything that changes the data just reloads.
+The researcher selects text, then presses a number key, clicks the floating Code as bar or uses Edit → Code selection. `code_selection_as()` (in `gui/read_code/coding_actions.py`) converts the selection to canonical offsets and pushes an `AddCodingCommand` (Ctrl+Z undoes it), which calls `storage.coding.add_coding()`. Then `reload_themes()` redraws from the database. The workspace never keeps its own copy of research decisions, so anything that changes the data just reloads.
 
-Comments work the same way through `storage/comments.py`. Drafts autosave. Anything that leaves the current document calls `CommentsPanel.flush_pending()` first and stops if the draft can't be saved.
+Comments work the same way through `storage/comments.py`. A comment is on a `Target`: a passage (document + range, optionally tagged with the theme that was selected), a theme, a document or the whole project. The panel shows one filter at a time (this document / this theme / whole project) with pinned threads on top whatever the filter. Drafts autosave. Anything that leaves the current document calls `CommentsPanel.flush_pending()` first and stops if the draft can't be saved.
 
 ### Refining an analysis
 
@@ -158,13 +158,12 @@ One SQLite file per project, `project.sqlite`. The schema version is in `PRAGMA 
 | `themes` | generated label, researcher label, status (active/proposed/merged/discarded) |
 | `model_suggestions` | segment -> theme for one run, with the BERTopic topic id |
 | `codings` | researcher decisions on exact ranges, with state |
-| `notes` | memos on a document, theme or coding |
-| `comments` | range-anchored comments, replies, drafts |
+| `comments` | comments on a passage, theme, document or the project (`scope`), replies, drafts, pinned flag |
 | `reading_marks` | which passages were read and the relevance verdict |
 | `history_events` | audit log, plus a couple of saved preferences |
 | `documents_fts` | full-text index for search (only if SQLite has FTS5) |
 
-Projects from the 0.2 test versions (versions 1 and 2) were only ever test projects, so 0.3 doesn't convert them: `migrate()` raises `OLD_PROJECT_MESSAGE` and leaves the file alone, and restore refuses their backups the same way. To change the schema: edit `SCHEMA`, bump `SCHEMA_VERSION`, and decide then whether real projects exist that need an upgrade step.
+The schema is version 4. Projects from the 0.2 test versions (versions 1 and 2) were only ever test projects, so 0.3 doesn't convert them: `migrate()` raises `OLD_PROJECT_MESSAGE` and leaves the file alone, and restore refuses their backups the same way. Version 3 (the first 0.3 builds) is upgraded in place by `_upgrade_3_to_4()`, which rebuilds `comments` with scopes and turns the old memos (`notes`) into comments. To change the schema: edit `SCHEMA`, bump `SCHEMA_VERSION`, and decide then whether real projects exist that need an upgrade step (`OLDEST_UPGRADABLE` says which versions restore accepts).
 
 ## Common changes
 
@@ -175,7 +174,7 @@ Projects from the 0.2 test versions (versions 1 and 2) were only ever test proje
 
 ## Wording
 
-The words on screen come from the rename sheet we worked through for 0.3 (NVivo-style terms where researchers already know them: code, uncode, codebook, memo/comment). `tests/test_wording.py` lists every label we retired and fails if one shows up again anywhere in `src/`, comments included. If you rename something on purpose, add the old text to that list. Names used in more than one place go in `gui/strings.py`.
+The words on screen come from the rename sheet we worked through for 0.3 (NVivo-style terms where researchers already know them: code, uncode, codebook, comment). `tests/test_wording.py` lists every label we retired and fails if one shows up again anywhere in `src/`, comments included. If you rename something on purpose, add the old text to that list. Names used in more than one place go in `gui/strings.py`.
 
 ## Tests
 

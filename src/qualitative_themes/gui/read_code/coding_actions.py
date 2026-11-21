@@ -15,6 +15,7 @@ from qualitative_themes.storage.coding import (add_coding, create_theme, list_th
 from qualitative_themes.storage.theme_keywords import theme_keyword_scores
 from qualitative_themes.storage.provenance import theme_provenance, origin_text
 
+from qualitative_themes.gui.read_code.tree_panel import _plural
 from qualitative_themes.gui.read_code.viewer import AddCodingCommand
 from qualitative_themes.analysis.topics import UNGROUPED_LABEL
 
@@ -74,16 +75,20 @@ class CodingActionsMixin:
                     theme = data.get('theme_id')
                     if theme not in rows:
                         continue
+                    name = rows[theme][0]
                     if data.get('kind') == 'theme':
                         documents, count = totals.get(theme, (0, 0))
-                        label = f"{rows[theme][0]} ({documents} {'document' if documents == 1 else 'documents'} · {count} {'passage' if count == 1 else 'passages'})"
+                        detail = f"{name}\n{_plural(count, 'passage')} in {_plural(documents, 'document')}"
                     elif data.get('kind') == 'group' and tree is self.document_tree:
                         count = len(self._navigation_groups.get((theme, data['document_id']), []))
-                        label = f"{rows[theme][0]} ({count} {'passage' if count == 1 else 'passages'})"
+                        detail = f"{name}\n{_plural(count, 'passage')}"
                     else:
                         continue
-                    item.setText(0, label)
-                    item.setToolTip(0, label)
+                    item.setText(0, name)
+                    item.setText(1, f"{count:,}")
+                    item.setToolTip(0, detail)
+                    item.setToolTip(1, detail)
+                    item.setData(0, Qt.ItemDataRole.UserRole + 1, name)
             finally:
                 tree.blockSignals(False)
 
@@ -92,7 +97,7 @@ class CodingActionsMixin:
             if doc == self.doc_id:
                 origin = assignment_origin(self.directory, assignment)
                 self.range_themes.setText(('Suggested by the tool' if origin == 'model' else 'Your coding')
-                                         + '\nThemes: ' + ', '.join(self.range_theme_labels(doc, start, end)))
+                                         + ' · Themes: ' + ', '.join(self.range_theme_labels(doc, start, end)))
 
     def reload_themes(self, select_id: str | None = None):
         """Rebuild the theme list and trees from the database, keeping the selection and scope.
@@ -117,6 +122,7 @@ class CodingActionsMixin:
         if self.themes.count() and not self.themes.currentItem():
             self.themes.setCurrentRow(0)
         self.themes.blockSignals(False)
+        self.update_comment_names(themes={tid: label for tid, label, _ in rows})
         self.rebuild_navigation(rows)
         if previous_navigation and previous_navigation.get("theme_id") == self.current_theme_id():
             self._navigation = previous_navigation
@@ -133,20 +139,28 @@ class CodingActionsMixin:
             self._from_tree = False
         self.sync_tree_selection()
 
-    def new_theme(self):
+    def new_theme(self, select=True):
+        """Ask for a name and create an empty theme. Returns its id, or None if cancelled.
+
+        select=False leaves the current selection alone (the caller is about to
+        code the selected text as the new theme).
+        """
         if self.directory is None:
-            return
+            return None
         label, ok = QInputDialog.getText(self, "New theme", "Theme name")
         if not ok:
-            return
+            return None
         try:
             theme_id = create_theme(self.directory, label)
-            self._draft_theme_ids.add(theme_id)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Could not create theme", str(exc))
+            return None
+        self._draft_theme_ids.add(theme_id)
+        if select:
             self._navigation = None
             self.organization_tabs.setCurrentIndex(1)
             self.reload_themes(theme_id)
-        except ValueError as exc:
-            QMessageBox.warning(self, "Could not create theme", str(exc))
+        return theme_id
 
     def select_theme(self, current, _previous=None):
         """Theme selection changed: load its matches into the evidence list and highlight them."""
@@ -179,6 +193,7 @@ class CodingActionsMixin:
             self.occurrence_title.setText("Coded passages")
         self.hits.blockSignals(False)
         self.range_themes.setText("Select a coded passage to see its themes.")
+        self.show_passage_actions(None)
         if self.matches:
             scope = self._navigation or {}
             selected = next((i for i, match in enumerate(self.matches) if scope.get("kind") == "passage" and
@@ -189,9 +204,10 @@ class CodingActionsMixin:
             if index >= 0:
                 self.document_choice.setCurrentIndex(index)
         self.highlight_matches()
-        self.reload_notes()
         self.update_passage_position()
         self.sync_tree_selection()
+        self.update_tree_strip()
+        self.comments_panel.set_theme(self.current_theme_id())
 
     def current_theme_id(self):
         item = self.themes.currentItem()
@@ -289,15 +305,18 @@ class CodingActionsMixin:
         if not ok:
             return
         if label == new_choice:
-            before = {tid for tid, _ in themes}
-            self.new_theme()
-            created = [tid for tid, _, _ in self.visible_themes() if tid not in before]
-            if not created:
-                return
-            theme_id = created[0]
+            self.code_selection_as_new_theme()
         else:
-            theme_id = themes[labels.index(label)][0]
-        self.code_selection_as(theme_id)
+            self.code_selection_as(themes[labels.index(label)][0])
+
+    def code_selection_as_new_theme(self):
+        """'+ New theme' on the selection: name a theme, then code the selected text as it."""
+        if not self.directory or not self.doc_id or not self.viewer.textCursor().hasSelection():
+            self.status.setText("Select some text in the document first.")
+            return
+        theme_id = self.new_theme(select=False)
+        if theme_id:
+            self.code_selection_as(theme_id)
 
     def code_selection_as(self, theme_id):
         """Code the selected text as ``theme_id`` (toolbar, number keys, or the Add button). Undoable."""
@@ -362,10 +381,9 @@ class CodingActionsMixin:
             self.code_selection_as(themes[number - 1][0])
 
     def comment_on_selection(self):
-        cursor = self.viewer.textCursor()
-        if not cursor.hasSelection() or not self.doc_id:
+        target = self.selection_target()
+        if target is None:
             return
-        start, end = self.coords.canonical_range(cursor.selectionStart(), cursor.selectionEnd())
         self.selection_toolbar.hide()
         self.comments_toggle.setChecked(True)
-        self.comments_panel.begin_comment(start, end, self.source_text[start:end])
+        self.comments_panel.begin_comment(target, quote=self.source_text[target.start:target.end])

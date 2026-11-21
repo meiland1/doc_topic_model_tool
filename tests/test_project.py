@@ -15,7 +15,7 @@ def test_create_reopen_and_foreign_keys(tmp_path):
         assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert {x[0] for x in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")} >= {
-            "documents", "document_pages", "segments", "themes", "codings", "notes", "analysis_runs", "model_suggestions", "history_events"
+            "documents", "document_pages", "segments", "themes", "codings", "comments", "analysis_runs", "model_suggestions", "history_events"
         }
 
 

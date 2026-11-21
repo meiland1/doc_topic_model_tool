@@ -9,7 +9,8 @@ from qualitative_themes.analysis.topics import AnalysisSettings, TopicOutput, an
 from qualitative_themes.export.research import build_export, write_codebook, write_coded_passages, _write_atomic
 from qualitative_themes.storage.database import connect, create_project
 from qualitative_themes.storage.documents import import_document, get_document, remove_documents
-from qualitative_themes.storage.coding import create_theme, add_coding, add_note, remove_coding, reject_model_suggestion, merge_themes
+from qualitative_themes.storage.coding import create_theme, add_coding, remove_coding, reject_model_suggestion, merge_themes
+from qualitative_themes.storage.comments import Target, add_comment, set_pinned
 from qualitative_themes.storage.history import rename_analysis
 
 class ExportTests(unittest.TestCase):
@@ -35,11 +36,11 @@ class ExportTests(unittest.TestCase):
     def test_multitheme_exact_ranges_overlaps_and_utf8_csv(self):
         other = create_theme(self.directory, 'Second theme')
         end = re.search(r'\r?\n\r?\n', self.text).start()
-        cid = add_coding(self.directory, self.docs[0], 0, end, self.manual)
+        add_coding(self.directory, self.docs[0], 0, end, self.manual)
         add_coding(self.directory, self.docs[0], 0, end, other)
         add_coding(self.directory, self.docs[0], 5, end, other)
-        add_note(self.directory, 'Memo, "quoted" 😀\nSecond line', coding_id=cid)
-        add_note(self.directory, 'Document memo', document_id=self.docs[0])
+        add_comment(self.directory, Target.passage(self.docs[0], 0, 4), 'Comment, "quoted" 😀\nSecond line')
+        add_comment(self.directory, Target.document(self.docs[0]), 'Document comment')
         before = self.snapshot()
         target = self.root/'passages.csv'
         self.assertEqual(write_coded_passages(self.directory, None, target), (2, 3))
@@ -48,7 +49,9 @@ class ExportTests(unittest.TestCase):
             rows = list(csv.DictReader(stream))
         self.assertEqual(rows[0]['quote'], self.text[:end])
         self.assertEqual(len(json.loads(rows[0]['themes'])), 2)
-        self.assertIn('😀\nSecond line', rows[0]['passage_notes'])
+        self.assertIn('😀\nSecond line', rows[0]['passage_comments'])
+        self.assertNotIn('😀', rows[1]['passage_comments'])  # starts after the comment's range
+        self.assertEqual(rows[1]['document_comments'], 'Document comment')
         self.assertEqual(rows[0]['assignment_source'], 'researcher')
         self.assertEqual(self.snapshot(), before)
 
@@ -59,19 +62,18 @@ class ExportTests(unittest.TestCase):
         reject_model_suggestion(self.directory, self.docs[0], start, end, tid)
         self.assertEqual(build_export(self.directory, self.run)['metadata']['unique_ranges'], 5)
         cid = add_coding(self.directory, self.docs[0], start, end, tid)
-        add_note(self.directory, 'Retained memo', coding_id=cid)
+        add_comment(self.directory, Target.passage(self.docs[0], start, end, tid), 'Kept comment')
         remove_coding(self.directory, cid)
         self.assertEqual(build_export(self.directory, self.run)['metadata']['unique_ranges'], 5)
         add_coding(self.directory, self.docs[0], start, end, tid)
-        restored = build_export(self.directory, self.run)['passages'][0]['assignments'][0]
-        self.assertEqual(restored['source'], 'researcher')
-        self.assertEqual(restored['notes'][0]['body'], 'Retained memo')
-        self.assertEqual(restored['notes'][0]['coding_state'], 'removed')
+        restored = build_export(self.directory, self.run)['passages'][0]
+        self.assertEqual(restored['assignments'][0]['source'], 'researcher')
+        self.assertEqual(restored['comments'][0]['body'], 'Kept comment')  # comments outlive the coding
 
-    def test_merge_aggregates_keywords_notes_and_deduplicates(self):
+    def test_merge_aggregates_keywords_comments_and_deduplicates(self):
         data = build_export(self.directory, self.run)
         themes = [row['theme_id'] for row in data['themes'] if row['keywords']]
-        add_note(self.directory, 'Source theme memo', theme_id=themes[0])
+        add_comment(self.directory, Target.theme(themes[0]), 'Source theme comment')
         for tid in themes:
             add_coding(self.directory, self.docs[0], 0, 10, tid)
         merge_themes(self.directory, themes[0], themes[1])
@@ -79,7 +81,7 @@ class ExportTests(unittest.TestCase):
         target = next(row for row in merged['themes'] if row['theme_id'] == themes[1])
         self.assertEqual(set(target['keywords']), {'café', 'review'})
         self.assertEqual(target['unique_coded_ranges'], 7)
-        self.assertEqual(target['theme_notes'][0]['body'], 'Source theme memo')
+        self.assertEqual(target['theme_comments'][0]['body'], 'Source theme comment')
         self.assertNotIn(themes[0], {row['theme_id'] for row in merged['themes']})
 
     def test_scope_removed_document_and_persistent_name(self):
@@ -95,7 +97,9 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(len(manual['themes']), 1)
 
     def test_codebook_formats_and_read_only_provenance(self):
-        add_note(self.directory, 'Theme description memo', theme_id=self.manual)
+        add_comment(self.directory, Target.theme(self.manual), 'Theme description comment')
+        pinned = add_comment(self.directory, Target.project(), 'Coding rules for the team')
+        set_pinned(self.directory, pinned)
         before = self.snapshot()
         target = self.root/'codebook.json'
         write_codebook(self.directory, self.run, target)
@@ -103,6 +107,8 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(data['metadata']['analysis_id'], self.run)
         self.assertEqual(data['metadata']['unique_ranges'], 6)
         self.assertIn('model_info', data['metadata'])
+        self.assertEqual([(c['body'], c['pinned']) for c in data['metadata']['project_comments']],
+                         [('Coding rules for the team', True)])
         self.assertTrue(data['themes'][0]['representative_evidence'] or data['themes'][1]['representative_evidence'])
         target = self.root/'codebook.csv'
         write_codebook(self.directory, self.run, target)

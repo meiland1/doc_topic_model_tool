@@ -97,7 +97,7 @@ def test_search_finds_word_beginnings_with_offsets_themes_and_comments(analysed)
     assert search(directory, "linic") == []  # mid-word fragments don't match
     assert len(search(directory, "garden")) == 3
     assert len(search(directory, "clinic", document_ids={docs[1]})) == 0
-    comment_store.add_comment(directory, docs[1], 0, 8, "Compare with the clinic transport theme")
+    comment_store.add_comment(directory, comment_store.Target.passage(docs[1], 0, 8), "Compare with the clinic transport theme")
     with_comments = search(directory, "transport", include_comments=True)
     assert [h.kind for h in with_comments] == ["comment"]
 
@@ -150,8 +150,8 @@ def test_large_maps_are_sampled_evenly():
 def test_search_comments_respect_theme_and_document_filters(analysed):
     directory, docs, run = analysed
     clinic = next(t for t in build_overview(directory, run)["themes"] if t["passages"] == 5)
-    comment_store.add_comment(directory, docs[0], 0, 8, "Compare transport")
-    comment_store.add_comment(directory, docs[1], 0, 8, "Compare transport")
+    comment_store.add_comment(directory, comment_store.Target.passage(docs[0], 0, 8), "Compare transport")
+    comment_store.add_comment(directory, comment_store.Target.passage(docs[1], 0, 8), "Compare transport")
     hits = search(directory, "transport", include_comments=True, run_id=run,
                   theme_ids={clinic["theme_id"]})
     assert len(hits) == 1 and hits[0].document_id == docs[0]
@@ -207,7 +207,7 @@ def test_search_enter_uses_latest_query_and_cancels_duplicate_search(analysed):
 def test_search_dialog_reports_truncation_and_groups_comments(analysed, monkeypatch):
     from qualitative_themes.gui import search_dialog
     directory, docs, run = analysed
-    comment_store.add_comment(directory, docs[0], 0, 8, "The clinic and garden")
+    comment_store.add_comment(directory, comment_store.Target.passage(docs[0], 0, 8), "The clinic and garden")
     dialog = search_dialog.SearchDialog(directory, run)
     dialog.include_comments.setChecked(True)
     dialog.field.setText("The")

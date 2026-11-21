@@ -121,3 +121,9 @@ QFrame#backCard { background: #f2faf9; border: 2px solid #0f766e; border-radius:
 QWidget#titleBar { background: #ffffff; border-bottom: 1px solid #cbd7df; }
 QToolButton#projectSwitcher { border: 1px solid #cbd7df; border-radius: 8px; padding: 5px 12px; background: #ffffff; }
 QToolButton#projectSwitcher::menu-indicator { image: none; }
+
+/* Read & code: Highlight switch, comment sections, collapsed tree strip */
+QPushButton#segment { border-radius: 0; padding: 3px 10px; min-height: 18px; }
+QPushButton#segment:checked { background: #0f766e; border-color: #0f766e; color: #ffffff; }
+QLabel#commentSection { color: #526478; font-weight: 600; padding-top: 4px; }
+QLabel#treeStrip { color: #1f2d3a; font-size: 8.5pt; }

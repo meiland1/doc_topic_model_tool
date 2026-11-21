@@ -111,14 +111,15 @@ def test_manual_scope_rejections_and_empty_theme(tree_workspace):
     assert all(m[3:5]!=removed[3:5] for m in w.matches)
 
 
-def test_tree_actions_update_rename_merge_and_research_notes(tree_workspace):
+def test_tree_actions_update_rename_merge_and_comments(tree_workspace):
     w,directory,docs,themes,run=tree_workspace
     group=choose(w,w.theme_tree,{'kind':'group','theme_id':themes[0],'document_id':docs[0]})
     w.populate_passages(group)
     data=group.child(0).data(0,Qt.ItemDataRole.UserRole)
     choose(w,w.theme_tree,data)
-    w.note_editor.setPlainText('Exact passage memo');w.save_new_note()
-    assert w.note_list.count()==1
+    w.comment_on_selection();w.comments_panel.editor.setPlainText('Exact passage comment');w.comments_panel.save_comment()
+    assert w.comments_panel.pending is None and len(w.comments_panel.cards)==1
+    assert w.comments_panel.cards[0].root.theme_id==themes[0]  # tagged with the selected theme
     assert len(w.viewer.extraSelections())==1
     rename_theme(directory,themes[0],'Care access');w.reload_themes(themes[0])
     root=w.find_navigation_node(w.theme_tree,{'kind':'theme','theme_id':themes[0]})
@@ -126,6 +127,8 @@ def test_tree_actions_update_rename_merge_and_research_notes(tree_workspace):
     merge_themes(directory,themes[1],themes[0]);w.reload_themes(themes[0])
     assert w.theme_tree.topLevelItemCount()==1
     assert sum(len(rows) for (theme,doc),rows in w._navigation_groups.items())==6
+    w.comments_panel.set_filter('theme')
+    assert [card.root.body for card in w.comments_panel.cards]==['Exact passage comment']
 
 
 def test_document_click_clears_previous_theme_and_highlight(tree_workspace):

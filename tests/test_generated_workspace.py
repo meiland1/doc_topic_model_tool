@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QApplication
 
 from qualitative_themes.analysis.topics import AnalysisSettings, TopicOutput, analyze
 from qualitative_themes.gui.read_code import CodingWorkspace
-from qualitative_themes.storage.coding import assignment_origin, list_notes
+from qualitative_themes.storage.coding import assignment_origin
 from qualitative_themes.storage.database import create_project
 from qualitative_themes.storage.documents import import_document
 from qualitative_themes.gui.analysis_setup import AnalysisSetupDialog
@@ -49,14 +49,15 @@ def test_generated_highlights_cross_document_and_utf16(generated_workspace):
     assert "Suggested by the tool" in workspace.range_themes.text()
 
 
-def test_note_accepts_suggestion_and_removal_stays_removed(generated_workspace):
+def test_keep_accepts_suggestion_and_removal_stays_removed(generated_workspace):
     app, workspace, docs, directory, run = generated_workspace
     before = len(workspace.matches)
-    workspace.note_editor.setPlainText("Research memo on a suggestion")
-    workspace.save_new_note()
+    assert not workspace.keep_button.isHidden() and not workspace.not_theme_button.isHidden()
+    assert workspace.uncode_button.isHidden()
+    workspace.keep_button.click()
     coding = workspace.matches[workspace.match_index][0]
     assert assignment_origin(directory, coding) == "researcher"
-    assert list_notes(directory, coding_id=coding)[0][1] == "Research memo on a suggestion"
+    assert workspace.keep_button.isHidden() and not workspace.uncode_button.isHidden()
     assert len(workspace.matches) == before
     workspace.remove_selected_coding()
     assert len(workspace.matches) == before-1
