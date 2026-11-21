@@ -12,9 +12,7 @@ Its methods are split by job into mixins, one file each:
   workers.py          the worker threads those tasks run on
 """
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QListWidget, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
-                               QSplitter, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QMainWindow, QMessageBox, QTabWidget, QVBoxLayout, QWidget)
 
 from qualitative_themes.domain.models import Project
 from qualitative_themes.analysis.segment import DEFAULT_UNIT
@@ -58,9 +56,24 @@ class MainWindow(ProjectSessionMixin, DocumentsPageMixin, LocalSetupMixin, Tasks
         self.resize(1200, 850)
         from PySide6.QtWidgets import QStackedWidget
         from qualitative_themes.gui.hub import Hub
+        from qualitative_themes.gui.title_bar import TitleBar
+        frame = QWidget()
+        frame_layout = QVBoxLayout(frame)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        frame_layout.setSpacing(0)
+        self.title_bar = TitleBar()
+        self.title_bar.recent_requested.connect(self.open_recent)
+        self.title_bar.open_requested.connect(self.open)
+        self.title_bar.new_requested.connect(self.create)
+        self.title_bar.start_screen_requested.connect(self.show_hub)
+        self.title_bar.current_requested.connect(self.back_to_project)
+        frame_layout.addWidget(self.title_bar)
         self.pages = QStackedWidget()
-        self.setCentralWidget(self.pages)
+        frame_layout.addWidget(self.pages, 1)
+        self.setCentralWidget(frame)
         self.hub = Hub()
+        self.hub.back_requested.connect(self.back_to_project)
+        self.hub.guide_requested.connect(self.show_quick_guide)
         self.hub.new_requested.connect(self.create)
         self.hub.practice_requested.connect(self.start_practice)
         self.hub.open_requested.connect(self.open)
@@ -69,31 +82,16 @@ class MainWindow(ProjectSessionMixin, DocumentsPageMixin, LocalSetupMixin, Tasks
         self.hub.setup.repair_requested.connect(self.repair_setup)
         self.hub.setup.add_model_requested.connect(self.add_model_pack)
         self.pages.addWidget(self.hub)
+        from qualitative_themes.gui.project_guide import ProjectGuide
+        self.quick_guide = ProjectGuide(on_start_screen=True)
+        self.quick_guide.action_requested.connect(self.guide_action)
+        self.pages.addWidget(self.quick_guide)
         root = QWidget()
         self.project_page = root
         self.pages.addWidget(root)
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setContentsMargins(12, 4, 12, 8)
         layout.setSpacing(6)
-        title = QLabel("Topic Model Tool")
-        title.setObjectName("applicationTitle")
-        header_row = QHBoxLayout()
-        self.home_button = QPushButton("← Home")
-        self.home_button.setToolTip("Back to the start screen: recent projects and local setup")
-        self.home_button.clicked.connect(self.show_hub)
-        header_row.addWidget(self.home_button)
-        header_row.addWidget(title)
-        self.status = QLabel("Create or open a project to begin.")
-        self.status.setObjectName("applicationStatus")
-        self.status.setWordWrap(True)
-        self.status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        header_row.addWidget(self.status, 1)
-        self.offline_badge = QLabel("Offline · nothing leaves this computer")
-        self.offline_badge.setObjectName("offlineBadge")
-        self.offline_badge.setToolTip("The app makes no network requests. The local AI engine only accepts "
-                                      "connections from this computer.")
-        header_row.addWidget(self.offline_badge)
-        layout.addLayout(header_row)
         self.task_progress = TaskProgress()
         self.task_progress.cancel_requested.connect(self.cancel_analysis)
         layout.addWidget(self.task_progress)
@@ -124,31 +122,7 @@ class MainWindow(ProjectSessionMixin, DocumentsPageMixin, LocalSetupMixin, Tasks
         self.project_guide = ProjectGuide()
         self.project_guide.action_requested.connect(self.guide_action)
         self.tabs.addTab(self.project_guide, strings.TAB_HELP)
-        actions = QHBoxLayout()
-
-        # Creating and opening projects are in the File menu; only adding documents stays here.
-        self.import_button = QPushButton(strings.ADD_DOCUMENTS)
-        self.import_button.setEnabled(False)
-        self.import_button.clicked.connect(self.import_files)
-        actions.addWidget(self.import_button)
-
-        actions.addStretch()
-        tab_layout.addLayout(actions)
-
-        # Buttons for running an analysis
-        analysis_actions = QHBoxLayout()
-        self.analyze_button = QPushButton("▶  " + strings.FIND_THEMES)
-        self.analyze_button.clicked.connect(self.start_analysis)
-        self.analyze_button.setProperty("primary", True)
-        self.analyze_button.setEnabled(False)
-        analysis_actions.addWidget(self.analyze_button)
-
-        # Cancel an analysis
-        self.cancel_analysis_button = QPushButton("Cancel")
-        self.cancel_analysis_button.clicked.connect(self.cancel_analysis)
-        self.cancel_analysis_button.setEnabled(False)
-        analysis_actions.addWidget(self.cancel_analysis_button)
-        tab_layout.addLayout(analysis_actions)
+        self._build_documents_tab(tab_layout)
         self.rename_run_button = self.workspace.name_run_button
         self.rename_run_button.clicked.connect(self.name_selected_run)
         self.ollama_model_choice = self.workspace.ollama_model_choice
@@ -160,55 +134,6 @@ class MainWindow(ProjectSessionMixin, DocumentsPageMixin, LocalSetupMixin, Tasks
         self.workspace.refine_button.clicked.connect(lambda: self.start_refinement())
         self.workspace.review_proposal_button.clicked.connect(self.review_pending_refinement)
         self.workspace.history_button.clicked.connect(self.show_analysis_history)
-        self.contents = QSplitter()
-
-        # Project Document file viewer/selector
-        left = QWidget()
-        left_lay = QVBoxLayout(left)
-        left_lay.addWidget(QLabel("Documents"))
-        self.document_list = QListWidget()
-        self.document_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
-        self.document_list.setToolTip("Select the documents to include. Themes are found across all selected documents together.")
-        self.document_list.currentItemChanged.connect(self.show_document)
-        self.document_list.itemSelectionChanged.connect(self.update_document_actions)
-        left_lay.addWidget(self.document_list)
-        selection_actions = QHBoxLayout()
-        self.select_all_documents_button = QPushButton("Select all")
-        self.select_all_documents_button.setEnabled(False)
-        self.select_all_documents_button.setToolTip("Select every document, to find themes across all of them together.")
-        self.select_all_documents_button.clicked.connect(self.document_list.selectAll)
-        selection_actions.addWidget(self.select_all_documents_button)
-        self.clear_document_selection_button = QPushButton("Select none")
-        self.clear_document_selection_button.setEnabled(False)
-        self.clear_document_selection_button.clicked.connect(self.document_list.clearSelection)
-        selection_actions.addWidget(self.clear_document_selection_button)
-        left_lay.addLayout(selection_actions)
-        self.document_selection_count = QLabel("0 of 0 documents selected")
-        left_lay.addWidget(self.document_selection_count)
-        self.remove_documents_button = QPushButton("Remove from project…")
-        self.remove_documents_button.setEnabled(False)
-        self.remove_documents_button.clicked.connect(self.remove_selected_documents)
-        left_lay.addWidget(self.remove_documents_button)
-        self.contents.addWidget(left)
-        right = QWidget()
-        right_lay = QVBoxLayout(right)
-        self.preview_title = QLabel("Add documents to see their text here.")
-        right_lay.addWidget(self.preview_title)
-
-        # Extracted text of the current document
-        self.preview = QPlainTextEdit()
-        self.preview.setReadOnly(True)
-        right_lay.addWidget(self.preview)
-        self.contents.addWidget(right)
-        self.contents.setStretchFactor(1, 3)
-        tab_layout.addWidget(self.contents, 1)
-        self.import_status = QLabel("")
-        self.import_status.setWordWrap(True)
-        tab_layout.addWidget(self.import_status)
-        self.import_log = QListWidget()
-        self.import_log.setMaximumHeight(105)
-        self.import_log.setAccessibleName("Document import results")
-        tab_layout.addWidget(self.import_log)
         self.hub.refresh_setup()
 
         build_menus(self)

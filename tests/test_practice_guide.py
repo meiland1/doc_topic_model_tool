@@ -24,7 +24,10 @@ def test_practice_is_synthetic_and_fresh_copy_preserves_work(monkeypatch):
 def test_hub_practice_guide_routes_and_reopening(tmp_path, qt_test_application):
     from qualitative_themes.gui.main_window import MainWindow
     window = MainWindow()
-    window.hub.practice_button.click()
+    window.hub.guide_button.click()
+    assert window.pages.currentWidget() is window.quick_guide
+    assert not window.quick_guide.buttons['check'].isEnabled()  # waits for a project
+    window.quick_guide.fresh.click()
     first = window.project
     assert window.tabs.currentWidget() is window.project_guide
     assert not window.project_guide.practice_help.isHidden()
@@ -42,7 +45,7 @@ def test_hub_practice_guide_routes_and_reopening(tmp_path, qt_test_application):
     real = create_project(tmp_path / 'real', 'Real study')
     window.open_recent(str(real.directory))
     assert window.project_guide.practice_help.isHidden()
-    assert window.project_guide.fresh.isHidden()
+    assert window.project_guide.fresh.text() == 'Open sample interviews'
     window.close()
 
 

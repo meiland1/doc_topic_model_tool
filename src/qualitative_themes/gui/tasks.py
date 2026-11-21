@@ -212,13 +212,13 @@ class TasksMixin:
         """
         if not self.project or self.busy:
             return
-        documents = [item.data(Qt.ItemDataRole.UserRole) for item in self.document_list.selectedItems()]
+        documents = [item.data(Qt.ItemDataRole.UserRole) for item in self.checked_document_items()]
         if not run_id and not documents:
             self.import_status.setText("Select the documents to include, then choose Find themes.")
             return
         settings = self.analysis_settings
         if not run_id:
-            chosen = [(item.data(Qt.ItemDataRole.UserRole), item.text()) for item in self.document_list.selectedItems()]
+            chosen = [(item.data(Qt.ItemDataRole.UserRole), item.text()) for item in self.checked_document_items()]
             models = [self.ollama_model_choice.itemData(i) for i in range(self.ollama_model_choice.count())]
             initial = replace(settings, ollama_model=self.ollama_model_choice.currentData() or settings.ollama_model)
             dialog = AnalysisSetupDialog(self.project.directory, chosen, initial,
@@ -319,7 +319,7 @@ class TasksMixin:
         self._analysis_worker = None
         self.update_naming_controls()
         self.import_button.setEnabled(self.project is not None)
-        self.analyze_button.setEnabled(self.document_list.count() > 0)
+        self.update_document_actions()
         self.cancel_analysis_button.setEnabled(False)
         self.workspace.cancel_task_button.setEnabled(False)
         if self._close_after_analysis:

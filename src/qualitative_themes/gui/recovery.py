@@ -62,6 +62,13 @@ class RecoveryController(QObject):
                              'Keeps the last 7 daily copies, on this computer. Back up to another drive for full protection.')
         self.refresh()
 
+    def project_closed(self):
+        """No project open: stop taking safety copies and grey out the menu items."""
+        self.directory = None
+        for action in (self.enabled_action, self.create_action):
+            action.setEnabled(False)
+        self.label.setText('Safety copies: open a project')
+
     def refresh(self):
         try:
             snapshots = list_snapshots(self.directory)

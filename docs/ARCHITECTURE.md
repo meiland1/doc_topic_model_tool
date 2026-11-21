@@ -26,6 +26,9 @@ src/qualitative_themes/
     menus.py            the File and Edit menus
     strings.py          names that appear in more than one place (tabs, menu items, "Not in any theme")
     restore_dialog.py   one dialog for restoring from a daily safety copy or a backup file
+    title_bar.py        the strip above every page: the project switcher and the offline badge
+    hub.py              the start screen, including the "Back to project" card
+    project_guide.py    the Quick guide (start screen and Help tab)
 packaging/        PyInstaller spec, Windows installer, macOS DMG script
 scripts/          fetch bundled resources, build model packs
 tests/            pytest; runs headless (QT_QPA_PLATFORM=offscreen)

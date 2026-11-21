@@ -17,9 +17,47 @@ from qualitative_themes.storage.preferences import load_setup
 
 class ProjectSessionMixin:
     def show_hub(self):
+        """Show the start screen. An open project stays open behind it (see back_to_project)."""
+        self.save_reading_position()
+        where = self.current_location()
+        self.title_bar.set_location(where)
+        self.hub.set_open_project(self.project.name if self.project else None, where)
         self.hub.reload_recent()
         self.hub.refresh_setup()
         self.pages.setCurrentWidget(self.hub)
+
+    def back_to_project(self):
+        """Return to the open project exactly as it was left. Nothing is reloaded."""
+        if self.project is not None:
+            self.pages.setCurrentWidget(self.project_page)
+
+    def show_quick_guide(self):
+        self.quick_guide.set_project(self.project)
+        self.pages.setCurrentWidget(self.quick_guide)
+
+    def current_location(self) -> str:
+        """Where the researcher is in the project, for the switcher and the Back card."""
+        if self.project is None:
+            return ""
+        tab = self.tabs.tabText(self.tabs.currentIndex()).replace("&&", "&")
+        if self.tabs.currentWidget() is self.workspace and self.workspace.doc_id:
+            name = self.workspace.document_choice.currentText().split(" [")[0]
+            return f"{tab} · {name}" if name else tab
+        return tab
+
+    def close_project(self):
+        """File → Close project: save drafts and position, then go back to the start screen with nothing open."""
+        if self.project is None or self.blocked_by_task("closing the project"):
+            return
+        if not self.flush_comments():
+            return
+        self.save_reading_position()
+        self.project = None
+        self.title_bar.set_project(None)
+        self.recovery.project_closed()
+        self.setWindowTitle("Topic Model Tool")
+        self.show_hub()
+        self.update_naming_controls()
 
     def start_practice(self):
         if self.blocked_by_task("opening a practice project"):
@@ -35,11 +73,19 @@ class ProjectSessionMixin:
             QMessageBox.warning(self, 'Could not create practice project', str(exc))
 
     def guide_action(self, action):
-        if not self.project:
+        """A Quick guide button was pressed (on the start screen or in the Help tab)."""
+        if action == 'start_screen':
+            self.show_hub()
             return
         if action == 'practice':
             self.start_practice()
-        elif action == 'add':
+            return
+        if not self.project:
+            if action == 'add':
+                self.create()
+            return
+        self.back_to_project()
+        if action == 'add':
             self.tabs.setCurrentIndex(0)
             self.import_button.click()
         elif action in {'check', 'topics'}:
@@ -47,7 +93,7 @@ class ProjectSessionMixin:
                 self.tabs.setCurrentWidget(self.overview)
             else:
                 self.tabs.setCurrentIndex(0)
-                if self.document_list.count() and not self.document_list.selectedItems():
+                if self.document_list.count() and self.document_list.currentItem() is None:
                     self.document_list.setCurrentRow(0)
                 self.document_list.setFocus()
         elif action == 'export':
@@ -93,7 +139,7 @@ class ProjectSessionMixin:
         if self.analysis_settings.ollama_model:
             self.ollama_model_choice.addItem(self.analysis_settings.ollama_model, self.analysis_settings.ollama_model)
         self.setWindowTitle(f"{project.name} — Topic Model Tool")
-        self.status.setText(f"Project: {project.name}\nLocation: {project.directory}")
+        self.title_bar.set_project(project)
         self.import_button.setEnabled(True)
         self.import_status.setText("Project ready. Add PDF, Word or text documents.")
         self.refresh_documents()

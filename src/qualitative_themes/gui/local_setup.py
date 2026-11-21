@@ -131,7 +131,7 @@ class LocalSetupMixin:
             worker.deleteLater()
         self._ollama_worker = None
         self.import_button.setEnabled(self.project is not None)
-        self.analyze_button.setEnabled(bool(self.project and self.document_list.count()))
+        self.update_document_actions()
         self.update_naming_controls()
         if self._close_after_analysis:
             self.close()
