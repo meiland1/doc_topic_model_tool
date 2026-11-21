@@ -29,17 +29,38 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(set(expected), set(PRESETS))
 
     def test_small_corpus_validation_and_neighbor_clamping(self):
-        with self.assertRaisesRegex(ValueError, "minimum evidence"):
-            validate_settings(preset_settings("Broad"), 5)
-        validate_settings(preset_settings("Broad"), 12)
-        validate_settings(preset_settings("Detailed"), 6)
-        params = effective_parameters(preset_settings("Detailed"), 6)
-        self.assertEqual(params["umap"]["n_neighbors"], 5)
-        self.assertEqual(params["umap"]["n_components"], 4)
-        for change in [{"requested_theme_count": 50}, {"requested_theme_count": 0},
-                       {"min_topic_size": 1}, {"batch_size": 0}, {"min_samples": 1.5}]:
+        validate_settings(preset_settings("Broad"), 5)  # small-collection grouping
+        with self.assertRaisesRegex(ValueError, "need at least 40"):
+            validate_settings(preset_settings("Broad", min_topic_size=40), 35)
+        params = effective_parameters(preset_settings("Detailed", n_neighbors=50), 36)
+        self.assertEqual(params["umap"]["n_neighbors"], 35)
+        self.assertEqual(params["umap"]["n_components"], 5)
+        for change in [{"requested_theme_count": 50}, {"requested_theme_count": 0}, {"min_topic_size": 0},
+                       {"batch_size": 0}, {"min_samples": 1.5}, {"top_n_words": 4}, {"top_n_words": 21},
+                       {"keyword_style": "fancy"}, {"max_themes": 0}, {"fill_threshold": 1.5},
+                       {"auto_merge": "yes"}]:
             with self.subTest(change=change), self.assertRaises(ValueError):
                 validate_settings(replace(AnalysisSettings(), **change), 12)
+
+    def test_more_options_have_our_defaults_and_old_runs_load(self):
+        settings = AnalysisSettings()
+        self.assertEqual((settings.fill_leftovers, settings.fill_threshold, settings.keyword_style,
+                          settings.play_down_common_words, settings.top_n_words, settings.auto_merge,
+                          settings.max_themes, settings.seed), (False, 0.5, "varied", True, 10, False, 100, 42))
+        from qualitative_themes.analysis.settings import settings_from_dict, settings_report, unsorted_level
+        old = settings_from_dict({"analysis_style": "Balanced", "min_samples": 2, "min_topic_size": 5})
+        self.assertEqual(old.max_themes, 100)
+        self.assertEqual(unsorted_level(old), "Balanced")
+        self.assertEqual(unsorted_level(replace(old, min_samples=1)), "Fewer")
+        report = settings_report({"analysis_style": "Balanced", "min_samples": 2, "min_topic_size": 5}, {})
+        self.assertIn("Keyword style:", report)
+        self.assertIn("not recorded (plain counts)", report)
+        self.assertIn("Random seed:", report)
+        new = settings_report(vars(AnalysisSettings()) | {"analysis_unit": "Paragraphs"},
+                              {"small_collection": True, "small_collection_distance": 0.42, "filled_leftovers": 3})
+        self.assertIn("More varied (recommended)", new)
+        self.assertIn("cut at distance 0.42", new)
+        self.assertIn("How documents were split", new)
 
     def test_custom_ignored_words_and_keyword_phrases(self):
         words = parse_ignored_words("Interview, INTERVIEW\nresearch; café")
@@ -85,16 +106,33 @@ class SettingsTests(unittest.TestCase):
                 self.topics_, self.targets = topics, []
             def reduce_topics(self, texts, nr_topics):
                 self.targets.append(nr_topics)
+        def goal(target, cap=100):
+            return replace(AnalysisSettings(), requested_theme_count=target, max_themes=cap)
         model = Model([-1, 0, 1, 2, 3])
-        self.assertEqual(apply_topic_goal(model, ["text"]*5, 2, lambda _: None), 4)
+        self.assertEqual(apply_topic_goal(model, ["text"]*5, goal(2), lambda _: None), 4)
         self.assertEqual(model.targets, [3])
         no_outlier = Model([0, 1, 2])
-        apply_topic_goal(no_outlier, ["text"]*3, 1, lambda _: None)
+        apply_topic_goal(no_outlier, ["text"]*3, goal(1), lambda _: None)
         self.assertEqual(no_outlier.targets, [1])
         for target in [None, 4, 20]:
             model = Model([0, 1])
-            apply_topic_goal(model, ["text"]*2, target, lambda _: None)
+            apply_topic_goal(model, ["text"]*2, goal(target), lambda _: None)
             self.assertEqual(model.targets, [])
+
+    def test_theme_cap_applies_after_discovery_and_with_about_n(self):
+        class Model:
+            def __init__(self, count):
+                self.topics_, self.targets = [-1, *range(count)], []
+            def reduce_topics(self, texts, nr_topics):
+                self.targets.append(nr_topics)
+        messages = []
+        model = Model(300)
+        self.assertEqual(apply_topic_goal(model, [], replace(AnalysisSettings(), max_themes=100), messages.append), 300)
+        self.assertEqual(model.targets, [101])  # 100 themes plus "Not in any theme"
+        self.assertIn("stay within 100", messages[0])
+        model = Model(300)
+        apply_topic_goal(model, [], replace(AnalysisSettings(), requested_theme_count=150, max_themes=100), print)
+        self.assertEqual(model.targets, [101])  # the cap wins over a larger About N
 
     def test_old_run_settings_restore_with_safe_defaults(self):
         settings = settings_from_dict({"analysis_unit": "Paragraphs", "min_topic_size": 5,

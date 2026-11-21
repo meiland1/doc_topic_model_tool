@@ -47,12 +47,19 @@ class ExportTests(unittest.TestCase):
         self.assertTrue(target.read_bytes().startswith(b'\xef\xbb\xbf'))
         with target.open(encoding='utf-8-sig', newline='') as stream:
             rows = list(csv.DictReader(stream))
-        self.assertEqual(rows[0]['quote'], self.text[:end])
-        self.assertEqual(len(json.loads(rows[0]['themes'])), 2)
-        self.assertIn('😀\nSecond line', rows[0]['passage_comments'])
-        self.assertNotIn('😀', rows[1]['passage_comments'])  # starts after the comment's range
-        self.assertEqual(rows[1]['document_comments'], 'Document comment')
-        self.assertEqual(rows[0]['assignment_source'], 'researcher')
+        # One row per passage per theme: [0, end) is in both themes, [5, end) in one.
+        self.assertEqual([(r['Passage'], r['Theme']) for r in rows],
+                         [(self.text[:end], 'Manual, "café" 😀'), (self.text[:end], 'Second theme'), (self.text[5:end], 'Second theme')])
+        self.assertIn('😀\nSecond line', rows[0]['Comments'])
+        self.assertNotIn('😀', rows[2]['Comments'])  # starts after the comment's range
+        self.assertEqual({r['Coded by'] for r in rows}, {'You'})
+        about = (self.root / 'passages - About this export.txt').read_text(encoding='utf-8')
+        self.assertIn('Document comment', about)
+        self.assertIn('Coded by:', about)
+        write_codebook(self.directory, None, self.root / 'book.csv')
+        with (self.root / 'book.csv').open(encoding='utf-8-sig', newline='') as stream:
+            mine = {r['Theme']: r for r in csv.DictReader(stream)}
+        self.assertEqual(mine['Manual, "café" 😀']['Named by'], 'You')
         self.assertEqual(self.snapshot(), before)
 
     def test_rejections_removals_and_reacceptance(self):
@@ -114,8 +121,46 @@ class ExportTests(unittest.TestCase):
         write_codebook(self.directory, self.run, target)
         with target.open(encoding='utf-8-sig', newline='') as stream:
             rows = list(csv.DictReader(stream))
-        self.assertEqual(sum(int(r['unique_coded_ranges']) for r in rows), 6)
+        self.assertEqual(list(rows[0])[:6], ['Theme', 'Description', 'Keywords', 'Passages', 'Documents', 'Named by'])
+        self.assertEqual(sum(int(r['Passages']) for r in rows), 6)
+        self.assertEqual({r['Named by'] for r in rows}, {'Keywords'})  # no AI names in this fixture
+        self.assertFalse(any(r['Theme'].startswith('Manual') for r in rows))  # not coded in this analysis
+        about = (self.root / 'codebook - About this export.txt').read_text(encoding='utf-8')
+        self.assertIn('Settings used', about)
+        self.assertIn('[pinned] Coding rules for the team', about)
+        write_codebook(self.directory, self.run, target, technical=True)
+        with target.open(encoding='utf-8-sig', newline='') as stream:
+            self.assertIn('Theme ID', next(csv.reader(stream)))
         self.assertEqual(self.snapshot(), before)
+
+    def test_excel_export_has_three_sheets_and_keeps_text_as_text(self):
+        from openpyxl import load_workbook
+        from qualitative_themes.export.research import write_everything
+        add_coding(self.directory, self.docs[0], 0, 5, self.manual)
+        before = self.snapshot()
+        target = self.root / 'everything.xlsx'
+        self.assertEqual(write_everything(self.directory, self.run, target, technical=True)[1], 7)
+        book = load_workbook(target)
+        self.assertEqual(book.sheetnames, ['Themes', 'Passages', 'About'])
+        headers = [cell.value for cell in book['Passages'][1]]
+        self.assertEqual(headers[:6], ['Document', 'Page', 'Theme', 'Passage', 'Coded by', 'Comments'])
+        self.assertIn('Start character', headers)
+        self.assertEqual(book['Passages'].freeze_panes, 'A2')
+        self.assertTrue(all(cell.data_type != 'f' for row in book['Passages'].iter_rows() for cell in row))
+        self.assertIn('Settings used', [row[0].value for row in book['About'].iter_rows()])
+        self.assertEqual(self.snapshot(), before)
+        with self.assertRaises(ValueError):
+            write_everything(self.directory, self.run, self.root / 'everything.csv')
+
+    def test_excel_cells_drop_control_characters_formulas_and_overlong_text(self):
+        from openpyxl import load_workbook
+        from qualitative_themes.export.excel import EXCEL_CELL_LIMIT, write_workbook
+        target = self.root / 'odd.xlsx'
+        write_workbook(target, [('Passages', ['Passage'], [['=SUM(A1)'], ['bell\x07'], ['x' * 40000]])], '=about')
+        sheet = load_workbook(target)['Passages']
+        self.assertEqual([sheet.cell(row, 1).value for row in (2, 3)], ['=SUM(A1)', 'bell'])
+        self.assertEqual(sheet.cell(2, 1).data_type, 's')
+        self.assertEqual(len(sheet.cell(4, 1).value), EXCEL_CELL_LIMIT)
 
     def test_empty_manual_export_has_headers_and_metadata(self):
         target = self.root/'empty.csv'
@@ -174,11 +219,11 @@ class ExportTests(unittest.TestCase):
                 end = re.search(r'\r?\n\r?\n', text).start()
                 add_coding(self.directory, doc, 0, end, self.manual)
                 target = self.root / 'line_endings.csv'
-                write_coded_passages(self.directory, None, target)
+                write_coded_passages(self.directory, None, target, technical=True)
                 with target.open(encoding='utf-8-sig', newline='') as stream:
-                    row = next(r for r in csv.DictReader(stream) if r['document_id'] == doc)
-                self.assertEqual(row['quote'], text[:end])
-                self.assertEqual(int(row['end_char']), end)
+                    row = next(r for r in csv.DictReader(stream) if r['Document ID'] == doc)
+                self.assertEqual(row['Passage'], text[:end])
+                self.assertEqual(int(row['End character']), end)
 
     def test_workspace_keyword_query_matches_codebook_after_rename_and_merge(self):
         from qualitative_themes.storage.theme_keywords import theme_keywords

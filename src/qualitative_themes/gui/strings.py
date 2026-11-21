@@ -36,6 +36,8 @@ EXPORT = "Export"
 EXPORT_CODEBOOK = "Codebook (CSV or JSON)…"
 EXPORT_PASSAGES = "Coded passages (CSV)…"
 EXPORT_READING_GUIDE = "Reading guide (Word)…"
+EXPORT_EVERYTHING = "Everything (Excel)…"
+EXPORT_TECHNICAL = "Include technical columns"
 CLOSE_PROJECT = "Close project"
 
 # Edit menu.

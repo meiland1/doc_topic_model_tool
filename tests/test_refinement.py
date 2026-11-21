@@ -267,6 +267,7 @@ class RefinementTests(unittest.TestCase):
 
     def test_successful_name_preview_does_not_publish_until_apply(self):
         class Reply:
+            status_code = 200
             def __init__(self, payload): self.payload = payload
             def raise_for_status(self): pass
             def json(self): return self.payload

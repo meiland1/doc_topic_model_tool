@@ -160,10 +160,14 @@ class BackendWiringTests(unittest.TestCase):
             def get_topic(self,topic): return [('clinic',.4)]
             def get_representative_docs(self,topic): return []
         modules = {}
-        for name, attribute, value in [('bertopic','BERTopic',Model), ('sentence_transformers','SentenceTransformer',Encoder), ('umap','UMAP',Algorithm), ('hdbscan','HDBSCAN',Algorithm)]:
-            module=ModuleType(name);setattr(module,attribute,value);modules[name]=module
+        for name, attribute, value in [('bertopic','BERTopic',Model), ('sentence_transformers','SentenceTransformer',Encoder), ('umap','UMAP',Algorithm), ('hdbscan','HDBSCAN',Algorithm),
+                                       ('bertopic.representation','MaximalMarginalRelevance',Algorithm),
+                                       ('bertopic.vectorizers','ClassTfidfTransformer',Algorithm),
+                                       ('bertopic.dimensionality','BaseDimensionalityReduction',Algorithm)]:
+            module=modules.get(name) or ModuleType(name);setattr(module,attribute,value);modules[name]=module
+        modules['bertopic.representation'].KeyBERTInspired = Algorithm
         passages=[SimpleNamespace(id=str(i),text=text) for i,text in enumerate(['clinic care','clinic medicine','unrelated orbit'])]
-        def represent(passages, assignments,*args):
+        def represent(passages, assignments, *args, **kwargs):
             return TopicOutput(assignments, {t:[('evidence',.2)] for t in set(assignments)})
         from conftest import fake_model_resources
         with TemporaryDirectory() as temporary, fake_model_resources(), replace_imports(modules), patch.object(engine,'version',return_value='test'), patch.object(refinement,'fixed_partition_backend',side_effect=represent):
@@ -171,6 +175,8 @@ class BackendWiringTests(unittest.TestCase):
             guided=AnalysisSettings(analysis_method='guided',min_topic_size=2,topic_definitions=(('Care','clinic, health insurance'),))
             result=engine.fit_bertopic(passages,guided,directory,lambda *args:None,None)
             self.assertEqual(captured[-1]['seed_topic_list'],[['clinic','health insurance']])
+            self.assertEqual(captured[-1]['top_n_words'], 10)
+            self.assertIsInstance(captured[-1]['representation_model'], Algorithm)  # "More varied" keywords
             self.assertEqual(result.model_info['analysis_method'],'guided')
             zero=replace(guided,analysis_method='zero_shot',topic_definitions=(('Care access','Healthcare access'),))
             result=engine.fit_bertopic(passages,zero,directory,lambda *args:None,None)

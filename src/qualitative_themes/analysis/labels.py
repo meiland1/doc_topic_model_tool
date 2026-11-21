@@ -7,6 +7,8 @@ response is unusable, the theme keeps its keyword name ("fallback").
 """
 from datetime import datetime, timezone
 import json
+import sys
+from time import perf_counter
 from uuid import uuid4
 
 from qualitative_themes.analysis.topics import UNGROUPED_LABEL, check_cancel, AnalysisCancelled
@@ -14,7 +16,17 @@ from qualitative_themes.storage.database import connect
 
 from qualitative_themes.runtime.engine import current_base_url
 TEMPLATE_VERSION = "qualitative-theme-label-v1"
-AUTO_NAMING_LIMIT = 100
+# Above this many themes naming starts with a time estimate. A rough guess for a
+# 7–8B model on a laptop; replaced by the measured pace once a few themes are named.
+ESTIMATE_ABOVE = 100
+SECONDS_PER_THEME = 6
+
+
+def naming_estimate(count, seconds_each=SECONDS_PER_THEME):
+    """'Naming about N themes will take roughly X minutes…' for the progress line."""
+    minutes = max(1, round(count * seconds_each / 60))
+    return (f"Naming about {count} themes will take roughly {minutes} minute{'s' if minutes != 1 else ''}. "
+            "You can cancel at any time.")
 SCHEMA = {"type": "object", "properties": {
     "label": {"type": "string", "minLength": 1, "maxLength": 80},
     "description": {"type": "string", "maxLength": 400}},
@@ -72,6 +84,64 @@ def list_local_models(client_factory=None):
         return models_from_client(client)
 
 
+def raise_for_ollama(response):
+    """Like raise_for_status, but keeps Ollama's own reason.
+
+    Ollama explains failures in the body ({"error": "model requires more system
+    memory…"}); the status line alone ("500 Internal Server Error") says nothing useful.
+    """
+    if response.status_code < 400:
+        return
+    try:
+        reason = response.json().get("error")
+    except Exception:
+        reason = None
+    if not reason:
+        reason = (getattr(response, "text", "") or "").strip()[:300] or "no reason given"
+    raise OllamaError(response.status_code, reason)
+
+
+# Words in Ollama's reason that mean the model runner crashed (usually loading onto the
+# graphics card), as opposed to the request itself being wrong.
+RUNNER_CRASH = ("llama runner", "runner process", "cuda", "ggml_assert", "gpu")
+
+
+# Words in Ollama's reason that mean the computer didn't have the memory to load the model.
+# Running on the processor needs the same memory, so these aren't retried.
+OUT_OF_MEMORY = ("out of memory", "out-of-memory", "failed to allocate", "unable to allocate",
+                 "more system memory", "not enough memory", "insufficient memory")
+
+
+def out_of_memory(exc) -> bool:
+    return any(word in str(exc).lower() for word in OUT_OF_MEMORY)
+
+
+def runner_crashed(exc) -> bool:
+    return (getattr(exc, "status", 0) >= 500 and not out_of_memory(exc)
+            and any(word in str(exc).lower() for word in RUNNER_CRASH))
+
+
+def memory_message(model_name, exc) -> str:
+    """What to tell the researcher when the naming model doesn't fit in memory."""
+    return (f"Not enough free memory to load {model_name}. Close other programs (or restart the computer), "
+            f"or choose a smaller naming model such as llama3.2:3b. Ollama said: {str(exc)[:120]}")
+
+
+def unload_model(client, model_name) -> None:
+    """Ask Ollama to free the naming model now rather than in 5 minutes (an 8B model holds 5–7 GB)."""
+    try:
+        client.post("/api/generate", json={"model": model_name, "keep_alive": 0}, timeout=10.0)
+    except Exception:
+        pass  # it unloads on its own after keep_alive anyway
+
+
+class OllamaError(ValueError):
+    """Ollama answered with an error status. `status` is the HTTP code."""
+    def __init__(self, status, reason):
+        super().__init__(f"Ollama error {status}: {reason}")
+        self.status = status
+
+
 def validate_label(value):
     """Parse the model's JSON reply into (label, description) or raise ValueError."""
     if not isinstance(value, dict) or set(value) - {"label", "description"}:
@@ -109,8 +179,7 @@ def _protected(conn, theme, proposal=False):
     return None
 
 
-def label_run(directory, run_id, model_name, progress=None, should_cancel=None, client_factory=None, proposal=False,
-              max_themes=None):
+def label_run(directory, run_id, model_name, progress=None, should_cancel=None, client_factory=None, proposal=False):
     """Retain analysis on failure; publish one complete labeling attempt atomically.
 
     Pre: a completed run (or a 'proposed' run when proposal=True).
@@ -128,11 +197,6 @@ def label_run(directory, run_id, model_name, progress=None, should_cancel=None, 
             raise ValueError("Select a completed analysis to name its themes.")
         info = json.loads(row[0])
         mapping = info.get("topic_theme_map", {})
-        theme_count = sum(int(topic) != -1 for topic in mapping)
-        if max_themes is not None and theme_count > max_themes:
-            progress(f'Analysis saved with {theme_count} topics. Automatic naming skipped above {max_themes} topics; '
-                     'keyword names are available. Review or reduce the topics before requesting names.')
-            return {'status': 'skipped_large_run', 'theme_count': theme_count, 'records': []}
         jobs = []
         for topic, theme in sorted(mapping.items(), key=lambda item: int(item[0])):
             check_cancel(should_cancel)
@@ -172,9 +236,17 @@ def label_run(directory, run_id, model_name, progress=None, should_cancel=None, 
             except Exception as exc:
                 service_error = "Local Ollama unavailable: " + str(exc)[:250]
         model_loading_shown = False
+        to_name = sum(not job["protection"] and job["topic_id"] != -1 for job in jobs)
+        if to_name > ESTIMATE_ABOVE and not service_error:
+            progress(naming_estimate(to_name))
+        named, naming_started, server_errors, processor_only, asked = 0, None, 0, False, False
         for index, job in enumerate(jobs):
             check_cancel(should_cancel)
-            progress(f"Naming theme {index+1}/{len(jobs)}…")
+            left = ""
+            if to_name > ESTIMATE_ABOVE and named >= 3:
+                pace = (perf_counter() - naming_started) / (named - 1)
+                left = f" about {max(1, round((to_name - named) * pace / 60))} min left"
+            progress(f"Naming theme {index+1}/{len(jobs)}…{left}")
             record = {key: job[key] for key in ("topic_id", "theme_id", "fallback_label")}
             record.update({"suggested_label": None, "description": None, "error": None})
             if job["protection"]:
@@ -193,30 +265,63 @@ def label_run(directory, run_id, model_name, progress=None, should_cancel=None, 
                         progress(f"Naming theme {index+1}/{len(jobs)}… loading {model_name} "
                                  "into memory first (can take a minute or two)")
                         model_loading_shown = True
-                    response = client.post("/api/generate", json={"model": model_name, "stream": False,
-                        "format": SCHEMA, "prompt": build_prompt(job["keywords"], job["excerpts"]),
-                        "options": {"temperature": 0.1, "seed": 42, "num_predict": 160, "num_ctx": 4096}})
-                    response.raise_for_status()
+                    def request(processor):
+                        options = {"temperature": 0.1, "seed": 42, "num_predict": 160, "num_ctx": 4096}
+                        if processor:
+                            options["num_gpu"] = 0  # no layers on the graphics card
+                        return {"model": model_name, "stream": False, "format": SCHEMA,
+                                "prompt": build_prompt(job["keywords"], job["excerpts"]), "options": options}
+                    try:
+                        asked = True
+                        response = client.post("/api/generate", json=request(processor_only))
+                        raise_for_ollama(response)
+                    except OllamaError as exc:
+                        if processor_only or not runner_crashed(exc):
+                            raise
+                        # Some graphics cards and drivers crash Ollama while loading the model
+                        # (seen on a laptop NVIDIA chip with the bundled Ollama). The processor is slower but works.
+                        processor_only = True
+                        print(f"Theme naming: the graphics card failed ({exc}); using the processor.", file=sys.stderr)
+                        progress(f"Naming theme {index+1}/{len(jobs)}… the graphics card couldn't load "
+                                 f"{model_name}, so naming on the processor instead (slower)")
+                        response = client.post("/api/generate", json=request(True))
+                        raise_for_ollama(response)
                     check_cancel(should_cancel)
                     envelope = response.json()
                     if not isinstance(envelope, dict) or envelope.get("done") is not True or not isinstance(envelope.get("response"), str):
                         raise ValueError("Ollama returned an incomplete response.")
                     label, description = validate_label(json.loads(envelope["response"]))
                     record.update(status="generated", suggested_label=label, description=description)
+                    named += 1
+                    if named == 1:
+                        naming_started = perf_counter()  # pace from the second theme: the first loads the model
                 except AnalysisCancelled:
                     raise
                 except Exception as exc:
+                    if isinstance(exc, OllamaError) and out_of_memory(exc):
+                        # Same memory needed for every theme: stop asking, say why plainly.
+                        service_error = memory_message(model_name, exc)
+                        exc = ValueError(service_error)
                     record.update(status="fallback", error=str(exc)[:300] or type(exc).__name__)
+                    # The engine itself failing (5xx) twice running won't get better by
+                    # asking about the next theme: keep keyword names for the rest.
+                    server_errors = server_errors + 1 if getattr(exc, "status", 0) >= 500 else 0
+                    if server_errors >= 2:
+                        service_error = record["error"]
+                    if not any(r["status"] == "fallback" for r in records):  # once per run, for the terminal
+                        print(f"Theme naming fell back to keywords: {record['error']}", file=sys.stderr)
             records.append(record)
     finally:
         if client is not None:
+            if asked:
+                unload_model(client, model_name)
             client.close()
     check_cancel(should_cancel)
     attempt = {"occurred_at": datetime.now(timezone.utc).isoformat(), "model": model_name,
                "model_identity": selected, "endpoint": current_base_url(), "template_version": TEMPLATE_VERSION,
                "temperature": 0.1, "seed": 42, "max_passages": 3, "max_passage_chars": 800,
                "num_predict": 160, "num_ctx": 4096, "read_timeout_seconds": READ_TIMEOUT_SECONDS,
-               "records": records}
+               "processor_only": processor_only, "records": records}
     with connect(directory) as conn:
         check_cancel(should_cancel)
         # Serialize the final protection check and update with researcher writes.
@@ -245,6 +350,35 @@ def label_run(directory, run_id, model_name, progress=None, should_cancel=None, 
     return attempt
 
 
+def naming_outcome(directory, run_id):
+    """How the latest naming attempt on a run went: (named, tried, first error or None).
+
+    `tried` counts themes the model was asked about (not "Not in any theme" or
+    themes you renamed). named == 0 with tried > 0 means every theme kept its
+    keyword name.
+    """
+    with connect(directory) as conn:
+        row = conn.execute("SELECT model_info_json FROM analysis_runs WHERE id=?", (run_id,)).fetchone()
+    attempts = json.loads(row[0]).get("labeling_attempts", []) if row else []
+    if not attempts:
+        return 0, 0, None
+    records = attempts[-1]["records"]
+    tried = [r for r in records if r["status"] in {"generated", "fallback"}]
+    errors = [r["error"] for r in tried if r["status"] == "fallback" and r["error"]]
+    return sum(r["status"] == "generated" for r in tried), len(tried), errors[0] if errors else None
+
+
+def naming_message(directory, run_id):
+    """One status line saying how naming went, with the reason if it didn't work."""
+    named, tried, error = naming_outcome(directory, run_id)
+    if tried and not named:
+        return f"Theme naming didn't work, so themes keep their keyword names. The naming model said: {error}"
+    if named < tried:
+        return (f"Named {named} of {tried} themes; the rest keep keyword names "
+                f"(first problem: {error}). Details are in ⋯ → About this analysis.")
+    return f"Named {named} themes. Names you gave themes were kept."
+
+
 def labeling_report(directory, run_id):
     """Human-readable summary of the latest naming attempt for a run."""
     if not run_id:
@@ -257,6 +391,8 @@ def labeling_report(directory, run_id):
             return "Theme names use BERTopic keywords."
         attempt = attempts[-1]
         lines = [f"Theme naming · {attempt['model'] or 'no model selected'} · {attempt['occurred_at'][:19]}"]
+        if attempt.get("processor_only"):
+            lines.append("Ran on the processor: the graphics card couldn't load the naming model.")
         for record in attempt["records"]:
             theme = conn.execute("SELECT coalesce(user_label,generated_label,'Unnamed'), user_label FROM themes WHERE id=?", (record["theme_id"],)).fetchone()
             label = theme[0] if theme else record["fallback_label"]

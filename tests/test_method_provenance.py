@@ -67,18 +67,18 @@ class MethodProvenanceTests(unittest.TestCase):
         self.assertEqual(entry['label_source'],'predefined')
         for kind in ['csv','json']:
             path=self.root/f'codebook.{kind}'
-            write_codebook(self.directory,self.run,path)
+            write_codebook(self.directory,self.run,path,technical=True)
             if kind=='csv':
                 rows=list(csv.DictReader(path.open(encoding='utf-8-sig')))
-                row=next(t for t in rows if t['theme_id']==self.topics[0])
-                self.assertEqual(json.loads(row['supplied_category_names']),['Care access'])
-                self.assertEqual(json.loads(row['analysis_configuration'])['analysis_method'],'zero_shot')
+                row=next(t for t in rows if t['Theme ID']==self.topics[0])
+                self.assertEqual(row['Named by'],'Your list')
+                about=(self.root/'codebook - About this export.txt').read_text(encoding='utf-8')
+                self.assertIn('Start from my own list of themes',about)
             else:
                 self.assertEqual(json.loads(path.read_text())['metadata']['analysis_method'],'zero_shot')
         path=self.root/'passages.csv';write_coded_passages(self.directory,self.run,path)
         rows=list(csv.DictReader(path.open(encoding='utf-8-sig')))
-        self.assertEqual(rows[0]['analysis_method'],'zero_shot')
-        self.assertIn('topic_origins',json.loads(rows[0]['assignments_json'])[0])
+        self.assertEqual(rows[0]['Coded by'],'Suggested')
         theme=create_theme(self.directory,'Manual health code');add_coding(self.directory,self.doc,0,6,theme)
         manual=build_export(self.directory)
         self.assertEqual(manual['metadata']['analysis_method'],'manual')
