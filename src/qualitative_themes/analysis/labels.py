@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import json
 from uuid import uuid4
 
-from qualitative_themes.analysis.topics import check_cancel, AnalysisCancelled
+from qualitative_themes.analysis.topics import UNGROUPED_LABEL, check_cancel, AnalysisCancelled
 from qualitative_themes.storage.database import connect
 
 from qualitative_themes.runtime.engine import current_base_url
@@ -140,7 +140,7 @@ def label_run(directory, run_id, model_name, progress=None, should_cancel=None, 
             if str(topic) in info.get("predefined_topic_labels", {}):
                 protection = protection or "protected"
             keywords = info.get("keywords", {}).get(topic, [])
-            fallback = ("Uncategorized" if int(topic) == -1 else
+            fallback = (UNGROUPED_LABEL if int(topic) == -1 else
                         f"Theme {int(topic)+1}: " + (", ".join(str(word) for word, _ in keywords[:3]) or "Unnamed"))
             references = list(dict.fromkeys(info.get("representative_segment_ids", {}).get(topic, [])))[:3]
             # Only actual suggestions in this run/topic; never read arbitrary files.
@@ -248,7 +248,7 @@ def label_run(directory, run_id, model_name, progress=None, should_cancel=None, 
 def labeling_report(directory, run_id):
     """Human-readable summary of the latest naming attempt for a run."""
     if not run_id:
-        return "Manual coding only."
+        return "No analysis selected."
     with connect(directory) as conn:
         row = conn.execute("SELECT model_info_json FROM analysis_runs WHERE id=?", (run_id,)).fetchone()
         info = json.loads(row[0]) if row else {}
@@ -261,7 +261,7 @@ def labeling_report(directory, run_id):
             theme = conn.execute("SELECT coalesce(user_label,generated_label,'Unnamed'), user_label FROM themes WHERE id=?", (record["theme_id"],)).fetchone()
             label = theme[0] if theme else record["fallback_label"]
             status = {"generated": "Ollama label", "fallback": "keyword fallback", "protected": "researcher decision preserved",
-                      "skipped_outlier": "Uncategorized retained", "skipped_merged": "merged theme retained"}[record["status"]]
+                      "skipped_outlier": f"{UNGROUPED_LABEL} kept", "skipped_merged": "merged theme retained"}[record["status"]]
             if theme and theme[1] is not None:
                 status = "researcher name preserved"
             lines.append(f"{label}: {status}" + (f" — {record['error']}" if record["error"] else ""))

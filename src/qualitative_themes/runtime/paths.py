@@ -41,6 +41,13 @@ def resources_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "resources"
 
 
+def missing_files_fix() -> str:
+    """How to get missing bundled files back: reinstall, or (from source) fetch them."""
+    if getattr(sys, "_MEIPASS", None) or os.environ.get(RESOURCES_ENV):
+        return "reinstall the app"
+    return "run  python scripts/fetch_resources.py  in the source folder"
+
+
 def app_data_dir(create: bool = True) -> Path:
     """Per-user writable folder (LOCALAPPDATA / Application Support / XDG data).
 

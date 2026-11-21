@@ -41,7 +41,6 @@ Thumbs.db
 /build/
 *.tmtpack
 
-
 # Local-only notes, benchmarks and helper scripts
 /docs/FOUNDATION_PLAN.md
 /docs/LOCAL_RELEASE_HANDOFF.md

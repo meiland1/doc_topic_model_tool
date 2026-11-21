@@ -10,6 +10,7 @@ from qualitative_themes.analysis.refinement import list_proposals
 
 
 from qualitative_themes.gui.workers import (EngineStartWorker, OllamaModelsWorker, PackInstallWorker)
+from qualitative_themes.gui.menus import update_menus
 
 
 class LocalSetupMixin:
@@ -56,11 +57,11 @@ class LocalSetupMixin:
         self.workspace.review_proposal_button.setEnabled(bool(self.project and list_proposals(self.project.directory)) and not busy)
         self.workspace.run_choice.setEnabled(not busy)
         self.workspace.rename_analysis_button.setEnabled(bool(self.project and self.workspace.run_id) and not busy)
-        for button in [self.workspace.history_button, self.workspace.export_codebook_button, self.workspace.export_passages_button]:
-            button.setEnabled(bool(self.project) and not busy)
+        self.workspace.history_button.setEnabled(bool(self.project) and not busy)
         self.refresh_models_button.setEnabled(not busy)
         self.ollama_model_choice.setEnabled(not busy)
         self.update_document_actions()
+        update_menus(self)
 
     def start_local_services(self):
         """Start the bundled engine in the background; the UI stays usable meanwhile.
@@ -99,7 +100,7 @@ class LocalSetupMixin:
         self._ollama_worker.result.connect(self.models_ready)
         self._ollama_worker.failed.connect(self.models_failed)
         self._ollama_worker.finished.connect(self.models_finished)
-        self.ollama_status.setText("Checking local Ollama…")
+        self.ollama_status.setText("Checking which naming models are installed…")
         for button in [self.import_button, self.analyze_button]:
             button.setEnabled(False)
         self.update_naming_controls()
@@ -116,12 +117,12 @@ class LocalSetupMixin:
             index = self.ollama_model_choice.findData(DEFAULT_NAMING_MODEL)
         if index >= 0:
             self.ollama_model_choice.setCurrentIndex(index)
-        self.ollama_status.setText(f"{len(models)} local model(s) found." if models else
-                                   "No local models found. Keyword names will be used.")
+        self.ollama_status.setText(f"{len(models)} naming model(s) installed." if models else
+                                   "No naming models installed, so themes will keep keyword names.")
 
     def models_failed(self, message):
         self.ollama_model_choice.clear()
-        self.ollama_status.setText("Local Ollama unavailable. Keyword fallback remains available. " + message)
+        self.ollama_status.setText("The naming engine isn't available; themes will keep keyword names. " + message)
 
     def models_finished(self):
         worker = self._ollama_worker

@@ -48,7 +48,7 @@ class HistoryTests(unittest.TestCase):
         self.assertNotIn(self.run, rows[0]['title'])
 
     def test_invalid_and_duplicate_names_leave_data_unchanged(self):
-        for name in ['a'*121, 'two\nlines', 'Manual coding only', 'bad\x00name']:
+        for name in ['a'*121, 'two\nlines', 'My coding only (no analysis)', 'bad\x00name']:
             with self.assertRaises(ValueError): rename_analysis(self.directory, self.run, name)
         with self.assertRaises(ValueError): rename_analysis(self.directory, 'missing', 'New')
         rename_analysis(self.directory, self.run, 'Reviews')
@@ -78,4 +78,4 @@ class HistoryTests(unittest.TestCase):
 
     def test_legacy_automatic_title(self):
         title = analysis_title(json.dumps({'analysis_unit': 'Paragraphs'}), '2026-10-01T12:30:40+00:00')
-        self.assertEqual(title, 'Analysis 2026-10-01 12:30:40 · Paragraphs')
+        self.assertEqual(title, 'Analysis 2026-10-01 12:30:40 · Split by paragraph')

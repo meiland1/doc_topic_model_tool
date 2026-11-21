@@ -38,7 +38,7 @@ def test_action_menus_forward_actions_and_follow_button_state(qt_test_applicatio
     workspace.sync_action_menus();assert action.isEnabled()
     action.trigger();assert seen==['history']
     workspace.history_button.setEnabled(False);workspace.sync_action_menus();assert not action.isEnabled()
-    assert workspace.export_codebook_button.isHidden()
+    assert workspace.history_button.isHidden()
     assert workspace.refine_button.isHidden()
     workspace.close()
 

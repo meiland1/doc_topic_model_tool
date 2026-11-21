@@ -102,7 +102,7 @@ def test_setup_dialog_previews_passages_and_offers_interviewer_option(tmp_path):
     _wait_for_inspection(dialog)
     assert dialog.summary["count"] == 1
     checked = [b.text() for b in dialog.unit_group.buttons() if b.isChecked()]
-    assert checked == ["Whole doc"]
+    assert checked == ["Whole document"]
     dialog.speaker_list.item(0).setCheckState(Qt.CheckState.Unchecked)
     assert dialog.settings().exclude_interviewer is False
     dialog.reject()

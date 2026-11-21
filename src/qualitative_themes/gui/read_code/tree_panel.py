@@ -21,7 +21,7 @@ class TreePanelMixin:
         left = QWidget()
         self.evidence_browser = left
         left_lay = QVBoxLayout(left)
-        left_lay.addWidget(QLabel("Browse evidence"))
+        left_lay.addWidget(QLabel("Passages"))
         # Internal flat selection controller keeps theme actions independent of
         # which tree contains the selection. Only the two trees are displayed.
         self.themes = QListWidget(self)
@@ -45,7 +45,7 @@ class TreePanelMixin:
         tree_help.setObjectName("workspaceHelp")
         tree_help.setWordWrap(True)
         left_lay.addWidget(tree_help)
-        self.theme_origin_label = QLabel("Origin: Select a theme.")
+        self.theme_origin_label = QLabel("Came from: select a theme.")
         self.theme_origin_label.setTextFormat(Qt.TextFormat.PlainText)
         self.theme_origin_label.setWordWrap(True)
         self.theme_origin_label.setAccessibleName("Selected theme origin")
@@ -55,19 +55,17 @@ class TreePanelMixin:
         self.theme_keywords_label.setWordWrap(True)
         self.theme_keywords_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.theme_keywords_label.setAccessibleName("Selected theme keywords")
-        self.theme_keywords_label.setToolTip("BERTopic keywords describe the saved evidence group. "
-            "Scores are saved keyword relevance weights displayed as percentages (weight × 100), not probabilities or confidence percentages. "
-            "Merged themes show the highest saved score for each keyword across their combined groups. "
-            "They are separate from its LLM or researcher-assigned label. "
-            "Earlier accepted themes use their latest saved keywords when absent from this analysis.")
+        self.theme_keywords_label.setToolTip("Words that set this theme's passages apart from the rest. "
+            "The percentage shows how strongly each word belongs to the theme; it isn't a probability. "
+            "Merged themes show each word's highest score. Keywords are separate from the theme's name.")
         left_lay.addWidget(self.theme_keywords_label)
         new_theme = QPushButton("+ New theme")
         new_theme.clicked.connect(self.new_theme)
         left_lay.addWidget(new_theme)
-        rename = QPushButton("Rename theme")
+        rename = QPushButton("Rename theme…")
         rename.clicked.connect(self.rename_selected_theme)
         left_lay.addWidget(rename)
-        merge = QPushButton("Merge theme into…")
+        merge = QPushButton("Merge into another theme…")
         merge.clicked.connect(self.merge_selected_theme)
         left_lay.addWidget(merge)
         splitter.addWidget(left)
@@ -80,7 +78,7 @@ class TreePanelMixin:
         else:
             self._browser_sizes = self.workspace_splitter.sizes()
             self.evidence_browser.hide()
-        self.browse_toggle.setText("Hide evidence" if visible else "Browse evidence")
+        self.browse_toggle.setText("Hide passage list" if visible else "Show passage list")
 
     @staticmethod
     def navigation_key(data):
@@ -213,7 +211,7 @@ class TreePanelMixin:
                 if index >= 0:
                     self.document_choice.setCurrentIndex(index)
                     self.load_document()
-                    self.status.setText("Document opened. Select a theme or passage in the tree to highlight evidence.")
+                    self.status.setText("Document opened. Select a theme or passage in the tree to highlight it.")
         finally:
             self._from_tree = False
         self.sync_tree_selection()

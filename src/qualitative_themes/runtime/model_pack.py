@@ -8,7 +8,7 @@ A ``.tmtpack`` file is a zip archive:
 
 It is built on a connected machine with ``scripts/build_model_pack.py`` and
 installed fully offline: the installer (Windows), the start screen's
-"Add naming model…" button, or ``--install-model-pack <file>``.
+"Add theme-naming model…" button, or ``--install-model-pack <file>``.
 
 GitHub limits each release file to 2 GiB, so a large pack (llama3.1:8b is about
 4.9 GB) is split into numbered parts: ``name.tmtpack.001``, ``name.tmtpack.002``…

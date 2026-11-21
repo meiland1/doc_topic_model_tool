@@ -11,6 +11,7 @@ from qualitative_themes.storage.history import analysis_title
 
 
 from qualitative_themes.gui.worker import WorkerThread
+from qualitative_themes.gui import strings
 
 
 class VisualizationWorker(WorkerThread):
@@ -60,7 +61,7 @@ class VisualizationTab(QWidget):
         self.run_choice.setAccessibleName('Analysis to visualize')
         self.run_choice.currentIndexChanged.connect(self.invalidate)
         actions.addWidget(self.run_choice, 1)
-        self.build_button = QPushButton('Build / Refresh visualizations')
+        self.build_button = QPushButton('Make charts')
         self.build_button.clicked.connect(lambda _checked=False: self.build_requested.emit())
         self.build_button.setEnabled(False)
         actions.addWidget(self.build_button)
@@ -69,10 +70,9 @@ class VisualizationTab(QWidget):
         self.cancel_button.clicked.connect(lambda _checked=False: self.cancel_requested.emit())
         actions.addWidget(self.cancel_button)
         outer.addLayout(actions)
-        note = QLabel('Document map: points represent coded passages, with document names in hover details. '
-            'Multi-theme ranges appear in each theme at the same position. '
-            'The heatmap and hierarchy describe current evidence similarity; hierarchy branches are exploratory groups, not saved parent themes. '
-            'Marker-only evidence is excluded from model views. Refresh after coding, renaming, merging, or refinement.')
+        note = QLabel('Passage map: each point is a coded passage (hover to see its document); a passage in two themes '
+            'appears once for each. The heatmap and theme tree show how similar themes are; tree branches are just '
+            'suggestions, not saved groups. Update the charts after coding, renaming, merging or adjusting themes.')
         note.setWordWrap(True)
         outer.addWidget(note)
         self.status = QLabel('Open a project and choose a saved analysis.')
@@ -81,31 +81,31 @@ class VisualizationTab(QWidget):
         split = QSplitter()
         self.plots = QTabWidget()
         self.pages = {}
-        for key, title in [('map','Document map'), ('heatmap','Heatmap'), ('hierarchy','Theme hierarchy')]:
+        for key, title in [('map','Passage map'), ('heatmap','Theme similarity'), ('hierarchy','Theme tree')]:
             page = QWidget()
             layout = QVBoxLayout(page)
-            message = QLabel('Build visualizations to see this view.')
+            message = QLabel('Choose Make charts to see this chart.')
             message.setWordWrap(True)
             layout.addWidget(message)
             self.pages[key] = (page, layout, message)
             self.plots.addTab(page, title)
         self.tree = QPlainTextEdit()
         self.tree.setReadOnly(True)
-        self.tree.setAccessibleName('Text based topic tree')
-        self.plots.addTab(self.tree, 'Text topic tree')
+        self.tree.setAccessibleName('Theme tree as text')
+        self.plots.addTab(self.tree, 'Theme tree (text)')
         split.addWidget(self.plots)
         details = QWidget()
         body = QVBoxLayout(details)
-        body.addWidget(QLabel('Themes and evidence'))
+        body.addWidget(QLabel('Themes'))
         self.themes = QListWidget()
         self.themes.setAccessibleName('Visualized themes')
         self.themes.currentItemChanged.connect(self.select_theme)
         body.addWidget(self.themes)
-        self.theme_details = QLabel('Select a theme to inspect its evidence.')
+        self.theme_details = QLabel('Select a theme to see its passages.')
         self.theme_details.setTextFormat(Qt.TextFormat.PlainText)
         self.theme_details.setWordWrap(True)
         body.addWidget(self.theme_details)
-        self.evidence_button = QPushButton('Open evidence in Research Workspace')
+        self.evidence_button = QPushButton('Open in ' + strings.READ_CODE)
         self.evidence_button.setEnabled(False)
         self.evidence_button.clicked.connect(self.open_evidence)
         body.addWidget(self.evidence_button)
@@ -144,18 +144,19 @@ class VisualizationTab(QWidget):
 
     def invalidate(self, _index=None):
         self.result_data = None
+        self.build_button.setText('Make charts')
         self.themes.clear()
         self.tree.clear()
-        self.theme_details.setText('Select a theme to inspect its evidence.')
+        self.theme_details.setText('Select a theme to see its passages.')
         self.evidence_button.setEnabled(False)
         for key, (page, layout, message) in self.pages.items():
             if key in self.viewers:
                 self.viewers[key].hide()
                 self.viewers[key].setUrl(QUrl('about:blank'))
-            message.setText('Build visualizations to see this view.')
+            message.setText('Choose Make charts to see this chart.')
             message.show()
         self._shown_run = self.run_choice.currentData()
-        self.status.setText('Ready to build the selected analysis.' if self.run_choice.currentData() else 'No completed analyses are available.')
+        self.status.setText('Ready to make charts for this analysis.' if self.run_choice.currentData() else 'No finished analyses yet.')
         self.build_button.setEnabled(bool(self.run_choice.currentData()))
         self.show_saved()
 
@@ -172,9 +173,9 @@ class VisualizationTab(QWidget):
             return False
         self.show_views(saved['paths'], saved)
         when = saved['built_at'][:16].replace('T', ' ')
-        self.status.setText((f'Showing views saved {when} UTC. ' if when else 'Showing saved views. ') +
-                            ('They match the current coding.' if saved['current'] else
-                             'Coding has changed since then — choose Build / Refresh to update them.')
+        self.status.setText((f'Showing charts made {when} UTC. ' if when else 'Showing saved charts. ') +
+                            ('They match your current coding.' if saved['current'] else
+                             'Your coding has changed since then — choose Update charts.')
                             + (' ' + ' '.join(saved['notes']) if saved.get('notes') else ''))
         return True
 
@@ -212,12 +213,12 @@ class VisualizationTab(QWidget):
                 path.write_text(content, encoding='utf-8')
                 paths[key] = path
         self.show_views(paths, result)
-        self.status.setText('Built from current effective coding and saved with the project, so it reopens instantly. '
-            'Map uses a 2D PCA projection of local embeddings; heatmap and hierarchy use rebuilt c-TF-IDF. '
-            'No saved coding or theme assignments were changed.' + (' ' + ' '.join(result['notes']) if result.get('notes') else ''))
+        self.status.setText('Made from your current coding and saved with the project, so they open instantly next time. '
+            'Nothing in your coding or themes was changed.' + (' ' + ' '.join(result['notes']) if result.get('notes') else ''))
 
     def show_views(self, paths, result):
         self.result_data = result
+        self.build_button.setText('Update charts')
         self._shown_run = self.run_choice.currentData()
         for key, (page, layout, message) in self.pages.items():
             if key in paths:

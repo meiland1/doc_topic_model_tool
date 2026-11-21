@@ -16,6 +16,7 @@ from qualitative_themes.storage.theme_keywords import theme_keyword_scores
 from qualitative_themes.storage.provenance import theme_provenance, origin_text
 
 from qualitative_themes.gui.read_code.viewer import AddCodingCommand
+from qualitative_themes.analysis.topics import UNGROUPED_LABEL
 
 
 class CodingActionsMixin:
@@ -90,7 +91,7 @@ class CodingActionsMixin:
             assignment, doc, _name, start, end, _excerpt = self.matches[self.match_index]
             if doc == self.doc_id:
                 origin = assignment_origin(self.directory, assignment)
-                self.range_themes.setText(('Model suggestion' if origin == 'model' else 'Researcher coding')
+                self.range_themes.setText(('Suggested by the tool' if origin == 'model' else 'Your coding')
                                          + '\nThemes: ' + ', '.join(self.range_theme_labels(doc, start, end)))
 
     def reload_themes(self, select_id: str | None = None):
@@ -158,7 +159,7 @@ class CodingActionsMixin:
         if current and self.directory:
             theme_id = current.data(Qt.ItemDataRole.UserRole)
             provenance = theme_provenance(self.directory, theme_id, self.run_id)
-            self.theme_origin_label.setText("Origin: " + origin_text(provenance))
+            self.theme_origin_label.setText("Came from: " + origin_text(provenance))
             self.theme_origin_label.setToolTip("Supplied categories: " + ", ".join(provenance["supplied_names"]) if provenance["supplied_names"] else
                 "Origin describes how this group was produced, not whether its assignments have been accepted.")
             words = theme_keyword_scores(self.directory, theme_id, self.run_id)
@@ -173,7 +174,7 @@ class CodingActionsMixin:
             document_count = len({m[1] for m in self.matches})
             self.occurrence_title.setText(f"{len(self.matches)} passages · {document_count} documents")
         else:
-            self.theme_origin_label.setText("Origin: Select a theme.")
+            self.theme_origin_label.setText("Came from: select a theme.")
             self.theme_keywords_label.setText("Keywords: Select a theme.")
             self.occurrence_title.setText("Coded passages")
         self.hits.blockSignals(False)
@@ -266,7 +267,7 @@ class CodingActionsMixin:
             add_coding(self.directory, doc, start, end, theme)
             self.reload_themes(theme)
             self.select_range(doc, start, end)
-            self.status.setText("Accepted as researcher coding; retained across later analyses.")
+            self.status.setText("Kept as your coding; it stays in later analyses too.")
         except ValueError as exc:
             self.status.setText(str(exc))
 
@@ -275,6 +276,28 @@ class CodingActionsMixin:
             self.status.setText("Choose a theme and select text in a document first.")
             return
         self.code_selection_as(self.themes.currentItem().data(Qt.ItemDataRole.UserRole))
+
+    def code_selection_with_picker(self):
+        """Edit → Code selection…: choose a theme from a list, then code the selected text."""
+        if not self.directory or not self.doc_id or not self.viewer.textCursor().hasSelection():
+            self.status.setText("Select some text in the document first.")
+            return
+        themes = [(tid, label) for tid, label, _ in self.visible_themes() if label != UNGROUPED_LABEL]
+        new_choice = "+ New theme…"
+        labels = [label for _, label in themes] + [new_choice]
+        label, ok = QInputDialog.getItem(self, "Code selection", "Theme", labels, 0, False)
+        if not ok:
+            return
+        if label == new_choice:
+            before = {tid for tid, _ in themes}
+            self.new_theme()
+            created = [tid for tid, _, _ in self.visible_themes() if tid not in before]
+            if not created:
+                return
+            theme_id = created[0]
+        else:
+            theme_id = themes[labels.index(label)][0]
+        self.code_selection_as(theme_id)
 
     def code_selection_as(self, theme_id):
         """Code the selected text as ``theme_id`` (toolbar, number keys, or the Add button). Undoable."""
@@ -308,7 +331,7 @@ class CodingActionsMixin:
 
     def toolbar_themes(self):
         colours = self.theme_colour_index()
-        return [(tid, label, colours[tid]) for tid, label, _ in self.visible_themes() if label != "Uncategorized"]
+        return [(tid, label, colours[tid]) for tid, label, _ in self.visible_themes() if label != UNGROUPED_LABEL]
 
     def update_selection_toolbar(self):
         cursor = self.viewer.textCursor()

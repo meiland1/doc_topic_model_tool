@@ -1,4 +1,4 @@
-"""Theme overview: a map of where to read after an analysis.
+"""The Themes tab: a map of where to read after an analysis.
 
 Cards summarise each theme (keywords, two quotes, spread); a documents × themes
 heatmap shows which documents to read for which theme; a coverage bar shows
@@ -64,7 +64,7 @@ class ThemeCard(QFrame):
             text.setObjectName("cardQuote")
             layout.addWidget(text)
         layout.addStretch()
-        button = QPushButton("Start reading →")
+        button = QPushButton("Read passages →")
         button.setProperty("primary", not theme["ungrouped"])
         button.clicked.connect(lambda: start_reading(theme["theme_id"]))
         layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignLeft)
@@ -89,7 +89,7 @@ class OverviewTab(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 10, 12, 10)
         top = QHBoxLayout()
-        title = QLabel("Theme overview")
+        title = QLabel("Themes")
         title.setObjectName("panelTitle")
         top.addWidget(title)
         self.subtitle = QLabel("")
@@ -106,9 +106,6 @@ class OverviewTab(QWidget):
         self.guided_button = QPushButton("Guided reading…")
         self.guided_button.clicked.connect(self.guided_reading)
         top.addWidget(self.guided_button)
-        self.export_button = QPushButton("Export reading guide…")
-        self.export_button.clicked.connect(self.export_guide)
-        top.addWidget(self.export_button)
         outer.addLayout(top)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -126,7 +123,7 @@ class OverviewTab(QWidget):
         self.cards.setSpacing(12)
         self.cards.setContentsMargins(0, 0, 0, 0)
         self.body.addWidget(self.cards_widget)
-        self.heat_title = QLabel("Where each theme appears")
+        self.heat_title = QLabel("Which documents mention each theme")
         self.heat_title.setObjectName("panelTitle")
         self.body.addWidget(self.heat_title)
         heat_help = QLabel("Darker cells have more passages. Click a cell to open that document with the theme "
@@ -152,7 +149,6 @@ class OverviewTab(QWidget):
         for widget in (self.cards_widget, self.heat_title, self.heat_help, self.heatmap):
             widget.setVisible(not empty)
         self.guided_button.setEnabled(not empty)
-        self.export_button.setEnabled(not empty)
 
     def set_run(self, directory, run_id):
         self.directory, self.run_id = (Path(directory) if directory else None), run_id
@@ -188,12 +184,15 @@ class OverviewTab(QWidget):
         if cover:
             self.coverage_label.setText(f"Reviewed {cover['reviewed']} of {cover['passages']} passages")
             self.coverage_bar.setValue(round(cover["share"] * 100))
-        self.subtitle.setText("" if self.data["has_fit"] else
-                              "  ·  passage fit strength unavailable for this analysis")
+        self.subtitle.setText("")
 
     def quote_text(self, quote):
-        _name, text, _ = get_document(self.directory, quote["document_id"])
-        words = " ".join(text[quote["start"]:quote["end"]].split())
+        if "text" in quote:
+            raw = quote["text"]  # included by build_overview; avoids reloading the document
+        else:
+            _name, text, _ = get_document(self.directory, quote["document_id"])
+            raw = text[quote["start"]:quote["end"]]
+        words = " ".join(raw.split())
         return words if len(words) <= 220 else words[:217].rsplit(" ", 1)[0] + "…"
 
     def render_cards(self):
@@ -265,6 +264,7 @@ class OverviewTab(QWidget):
             self.open_cell.emit(self.data["themes"][column - 1]["theme_id"], item.data(Qt.ItemDataRole.UserRole + 1))
 
     def export_guide(self):
+        """File → Export → Reading guide (Word): passages to read for each theme of the shown analysis."""
         if not self.directory:
             return
         path, _ = QFileDialog.getSaveFileName(self, "Export reading guide", str(Path.home() / "reading-guide.docx"),

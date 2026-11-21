@@ -54,7 +54,7 @@ def import_document(directory: Path, source: Path) -> ImportOutcome:
             if duplicate[2] == "removed":
                 restore_documents(directory, [duplicate[0]])
                 return ImportOutcome(source.name, "restored", duplicate[0],
-                                     f"Restored {duplicate[1]} with its saved text and research decisions.")
+                                     f"Brought back {duplicate[1]} with its coding and comments.")
             return ImportOutcome(source.name, "duplicate", duplicate[0],
                                  f"Already imported as {duplicate[1]}.")
         extracted = extract_document(source)

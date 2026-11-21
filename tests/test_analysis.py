@@ -90,7 +90,7 @@ class AnalysisRepositoryTests(unittest.TestCase):
         mapping = self.mapping(run)
         self.assertEqual(len(set(mapping.values())), 3)
         themes = list_themes(self.directory, run)
-        self.assertIn("Uncategorized", [label for _, label, _ in themes])
+        self.assertIn("Not in any theme", [label for _, label, _ in themes])
         self.assertEqual(sum(count for _, _, count in themes), 12)
         hits = occurrences(self.directory, mapping["0"], run)
         self.assertEqual({h[1] for h in hits}, set(self.docs))

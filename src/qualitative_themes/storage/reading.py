@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from bisect import bisect_left
 from qualitative_themes.storage.database import connect
 
 VERDICTS = {"read", "relevant", "not_relevant"}
@@ -64,16 +65,31 @@ def coverage(directory: Path, run_id: str) -> dict:
             JOIN documents d ON d.id=s.document_id WHERE s.run_id=? ORDER BY d.imported_at, d.rowid, s.ordinal""",
                                 (run_id,)).fetchall()
         reviewed = conn.execute("SELECT document_id, start_char, end_char FROM reading_marks").fetchall()
+    # Per document: marks sorted by start, plus the running max of their ends.
+    # A passage [start, end) overlaps some mark (a < end and start < b) exactly
+    # when the largest b among marks with a < end is greater than start. This
+    # replaces a passages x marks scan that took seconds on large analyses.
     by_doc: dict[str, list[tuple[int, int]]] = {}
     for doc, start, end in reviewed:
         by_doc.setdefault(doc, []).append((start, end))
+    index: dict[str, tuple[list[int], list[int]]] = {}
+    for doc, spans in by_doc.items():
+        spans.sort()
+        starts, running_max, best = [], [], None
+        for a, b in spans:
+            best = b if best is None or b > best else best
+            starts.append(a)
+            running_max.append(best)
+        index[doc] = (starts, running_max)
     per_doc: dict[str, dict] = {}
     total = done = 0
     for doc, name, start, end in segments:
         entry = per_doc.setdefault(doc, {"name": name, "passages": 0, "reviewed": 0})
         entry["passages"] += 1
         total += 1
-        if any(a < end and start < b for a, b in by_doc.get(doc, [])):
+        starts, running_max = index.get(doc, ((), ()))
+        before = bisect_left(starts, end)
+        if before and running_max[before - 1] > start:
             entry["reviewed"] += 1
             done += 1
     for entry in per_doc.values():

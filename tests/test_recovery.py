@@ -110,19 +110,42 @@ def test_prune_failure_keeps_verified_new_snapshot(study, monkeypatch):
     assert oldest.is_file() and len(recovery.list_snapshots(project.directory)) == 8
 
 
-def test_start_screen_recovers_when_original_folder_was_moved(study, tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QInputDialog
+def test_restore_dialog_finds_safety_copy_when_original_folder_was_moved(study, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QDialog
     from qualitative_themes.gui.main_window import MainWindow
+    from qualitative_themes.gui.restore_dialog import RestoreDialog
     project, _ = study
     window = MainWindow()
     window._show_project(project)
     snapshot = recovery.create_snapshot(project.directory).path
+    window.show_hub()
+    window.project = None
     project.directory.rename(tmp_path / 'moved-project')
-    monkeypatch.setattr(QInputDialog, 'getItem', lambda parent, title, prompt, items, *args: (items[0], True))
+    dialog = RestoreDialog(None)
+    assert dialog.from_copy.isChecked() and dialog.chosen_snapshot() == snapshot
+    monkeypatch.setattr(RestoreDialog, 'exec', lambda self: QDialog.DialogCode.Accepted)
     chosen = []
     monkeypatch.setattr(window, 'restore_project_backup', chosen.append)
-    window.recovery.choose_recent()
+    window.restore_project()
     assert chosen == [snapshot]
+
+
+def test_restore_dialog_backup_file_choice_asks_for_the_file(study, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QDialog, QFileDialog
+    from qualitative_themes.gui.main_window import MainWindow
+    from qualitative_themes.gui.restore_dialog import RestoreDialog
+    project, _ = study
+    window = MainWindow()
+    window._show_project(project)
+    def accept_with_backup(self):
+        self.from_backup.setChecked(True)
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(RestoreDialog, 'exec', accept_with_backup)
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *a, **k: (str(tmp_path / 'b.tmtbackup'), ''))
+    chosen = []
+    monkeypatch.setattr(window, 'restore_project_backup', chosen.append)
+    window.restore_project()
+    assert chosen == [str(tmp_path / 'b.tmtbackup')]
 
 
 def test_disabled_preference_persists_on_reopen(study):
@@ -178,7 +201,7 @@ def test_ui_snapshot_flushes_draft_and_failure_is_nonmodal(study, monkeypatch):
         raise OSError('Read-only disk')
     monkeypatch.setattr(gui, 'transfer', fail)
     window.recovery.run(manual=True)
-    assert 'Normal saving remains available' in window.recovery.label.text()
+    assert 'still saved as normal' in window.recovery.label.text()
     assert not window.recovery.running
     panel.editor.setPlainText('Still able to save')
     assert panel.flush_pending()

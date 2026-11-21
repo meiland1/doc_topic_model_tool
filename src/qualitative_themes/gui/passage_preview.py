@@ -63,8 +63,7 @@ class PassagePreviewMixin:
         self.preview.setReadOnly(True)
         self.preview.setObjectName("passagePreview")
         layout.addWidget(self.preview, 1)
-        note = QLabel("Shaded bands are passages. Grey text is left out of theme finding. "
-                      "The same split is used when you click Analyze.")
+        note = QLabel("Preview: each shaded band is one passage. Grey text is ignored.")
         note.setObjectName("quiet")
         note.setWordWrap(True)
         layout.addWidget(note)

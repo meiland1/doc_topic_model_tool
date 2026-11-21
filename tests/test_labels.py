@@ -81,7 +81,7 @@ class LabelingTests(unittest.TestCase):
         attempt = self.label(client)
         self.assertTrue(client.closed)
         self.assertEqual(self.name(0), "Access barriers")
-        self.assertEqual(self.name(-1), "Uncategorized")
+        self.assertEqual(self.name(-1), "Not in any theme")
         self.assertEqual(attempt["model_identity"]["digest"], "sha256:fixture")
         self.assertEqual(attempt["template_version"], TEMPLATE_VERSION)
         for payload in client.posts:

@@ -32,10 +32,18 @@ from qualitative_themes.storage.database import connect
 from qualitative_themes.storage.coding import analysis_document_ids
 
 OPERATIONS = {
-    "names": ("Regenerate machine names", "Uses local Ollama (or keyword fallback). Keeps passage groups. Your names are protected. Names of reused themes apply globally only after Apply."),
-    "words": ("Refresh theme words", "Rebuilds keywords and representative evidence from the saved groups. No embedding or clustering step. Keeps passage groups; ignored words affect keywords only."),
-    "reduce": ("Propose fewer themes", "Combines saved groups using BERTopic keyword similarity. No embedding or discovery step. Uncategorized stays separate. Combined themes require identity review."),
-    "discover": ("Run fresh discovery", "Runs embedding, dimensionality reduction, and clustering with your chosen settings. Cached embeddings are reused when compatible. Groups and passage size may change; more themes are not guaranteed."),
+    "names": ("Suggest new theme names",
+              "Asks the AI on this computer for new names (or keeps keyword names if naming isn't available). "
+              "Passages stay in the same themes, and names you gave a theme are never replaced."),
+    "words": ("Update keywords",
+              "Works out each theme's keywords and example passages again. Passages stay in the same themes; "
+              "words to ignore only change the keywords."),
+    "reduce": ("Combine similar themes",
+               "Joins themes whose keywords overlap. Your coding is kept, \"Not in any theme\" stays separate, "
+               "and you review each change before it's applied."),
+    "discover": ("Find themes again with new settings",
+                 "Re-reads all passages and finds themes again. Takes longer. Themes may change, and you may not "
+                 "get more of them."),
 }
 
 
@@ -199,7 +207,8 @@ def propose_refinement(directory, source_id, operation, settings=None, unit=None
     if operation == 'discover' and unit in TOKEN_SAFE_UNITS:
         settings = replace(settings, allow_truncation=False)
     if operation == "reduce" and source["settings"].analysis_method == "zero_shot":
-        raise ValueError("Automatic reduction is disabled for zero-shot analyses. Merge themes explicitly in Research Workspace instead.")
+        raise ValueError("Combining themes is turned off when you started from your own list of themes. "
+                         "Merge themes yourself in Read & code instead.")
     if operation != "discover" and unit != source["unit"]:
         raise ValueError("Changing passage size requires fresh discovery.")
     if operation != "discover":
@@ -231,7 +240,7 @@ def propose_refinement(directory, source_id, operation, settings=None, unit=None
             count = len(set(output.assignments) - {-1})
             target = settings.requested_theme_count
             if type(target) is not int or not 1 <= target < count:
-                raise ValueError(f"Choose fewer than the {count} current themes, excluding Uncategorized.")
+                raise ValueError(f"Choose fewer than the {count} current themes (not counting \"Not in any theme\").")
         output = (representation_backend or fixed_partition_backend)(
             passages, output.assignments, settings, operation, progress, should_cancel)
         if len(output.assignments) != len(passages):
@@ -250,7 +259,7 @@ def propose_refinement(directory, source_id, operation, settings=None, unit=None
             if any(len(group) != 1 for group in destinations.values()) or len(set(output.assignments) - {-1}) >= count:
                 raise ValueError("Reduction must combine whole saved groups into fewer themes.")
         if any((a == -1) != (b == -1) for a, b in zip(source["output"].assignments, output.assignments)):
-            raise ValueError("This refinement changed Uncategorized memberships unexpectedly.")
+            raise ValueError("This change moved passages in or out of \"Not in any theme\" unexpectedly.")
     if operation != "discover":
         output.model_info['segmentation'] = source['model_info'].get('segmentation', {})
         from qualitative_themes.storage.provenance import combine_provenance
@@ -425,7 +434,7 @@ def apply_proposal(directory, proposal_id, mappings):
             if oid not in old or not (new[tid] & old[oid]):
                 raise ValueError("Theme identity reuse needs actual shared source passages.")
             if (new[tid] <= new_outliers) != (old[oid] <= old_outliers):
-                raise ValueError("Uncategorized cannot inherit a regular theme identity.")
+                raise ValueError("\"Not in any theme\" can't be matched to a regular theme.")
             if conn.execute("SELECT status FROM themes WHERE id=?", (oid,)).fetchone()[0] != "active":
                 raise ValueError("An earlier theme was merged; prepare a new proposal.")
             proposed = conn.execute("SELECT generated_label,description FROM themes WHERE id=?", (tid,)).fetchone()

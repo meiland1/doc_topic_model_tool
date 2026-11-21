@@ -1,4 +1,4 @@
-"""Data for the Theme overview: where to read, theme by theme and document by document."""
+"""Data for the Themes tab: where to read, theme by theme and document by document."""
 from __future__ import annotations
 
 import json
@@ -10,7 +10,7 @@ from qualitative_themes.storage.database import connect
 from qualitative_themes.storage.documents import list_documents
 from qualitative_themes.storage.navigation import navigation_groups
 from qualitative_themes.storage.reading import coverage, marks
-from qualitative_themes.storage.theme_keywords import theme_keywords
+from qualitative_themes.storage.theme_keywords import theme_keywords_from_connection
 
 UNGROUPED_TITLE = "Unusual / ungrouped passages"
 UNGROUPED_NOTE = "Not grouped with other passages. Rare experiences often show up here, so read these too."
@@ -64,9 +64,19 @@ def build_overview(directory: Path, run_id: str | None) -> dict:
         ungrouped = set()
     with connect(directory) as conn:
         texts = dict(conn.execute("SELECT id, canonical_text FROM documents"))
+    # Group rows by theme once; scanning every (theme, document) group per theme
+    # was quadratic and dominated large analyses (hundreds of themes x documents).
+    rows_by_theme: dict[str, list] = {}
+    for (theme, _doc), group_rows in groups.items():
+        rows_by_theme.setdefault(theme, []).extend(group_rows)
+    # One read for every theme's keywords; each run's details are parsed once.
+    keyword_cache: dict = {}
+    with connect(directory) as conn:
+        keywords = {tid: theme_keywords_from_connection(conn, tid, run_id, keyword_cache)
+                    for tid, _, _ in theme_rows if tid not in ungrouped}
     themes = []
     for index, (tid, label, _count) in enumerate(theme_rows):
-        rows = [row for (theme, _doc), rows in groups.items() if theme == tid for row in rows]
+        rows = rows_by_theme.get(tid, [])
         if not rows and tid not in ungrouped:
             continue
         ordered = reading_order(rows, fits)
@@ -84,9 +94,11 @@ def build_overview(directory: Path, run_id: str | None) -> dict:
         themes.append({
             "theme_id": tid, "label": UNGROUPED_TITLE if is_ungrouped else label, "stored_label": label,
             "colour": index, "ungrouped": is_ungrouped,
-            "keywords": [] if is_ungrouped else theme_keywords(directory, tid, run_id)[:6],
+            "keywords": [] if is_ungrouped else keywords.get(tid, [])[:6],
             "passages": len(rows), "documents": len({row[1] for row in rows}),
-            "quotes": [{"document_id": r[1], "document": r[2], "start": r[3], "end": r[4]} for r in quotes],
+            # `text` saves the screen from reloading whole documents for each quote.
+            "quotes": [{"document_id": r[1], "document": r[2], "start": r[3], "end": r[4],
+                        "text": texts[r[1]][r[3]:r[4]]} for r in quotes],
         })
     themes.sort(key=lambda t: (t["ungrouped"], -t["passages"], t["label"].lower()))
     matrix = {(theme, doc): len(rows) for (theme, doc), rows in groups.items()}

@@ -46,7 +46,7 @@ class AnalysisHistoryDialog(QDialog):
         self.offsets = {"runs": 0, "events": 0}
         self.sizes = {"runs": 50, "events": 100}
         self.widgets = {}
-        self.setWindowTitle("Analysis History")
+        self.setWindowTitle("History")
         self.resize(1000, 700)
         layout = QVBoxLayout(self)
         note = QLabel("Saved analyses and project activity are shown newest first. "
@@ -109,7 +109,8 @@ class AnalysisHistoryDialog(QDialog):
         widgets["technical"].clear()
         for record in records:
             if key == "runs":
-                status = {"completed": "Saved analysis", "segmented": "Passage preview", "proposed": "Pending proposal", "cancelled": "Cancelled proposal"}.get(record["status"], record["status"])
+                status = {"completed": "Saved analysis", "proposed": "Adjusted themes waiting for review",
+                          "cancelled": "Cancelled adjustment"}.get(record["status"], record["status"])
                 text = record["title"] + " · " + record["method"] + " · " + status
             else:
                 text = record["timestamp"][:19].replace("T", " ") + " · " + record["summary"]

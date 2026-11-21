@@ -4,15 +4,12 @@ Both dialogs ask for the same keyword and naming choices, so they're built
 here once. A new keyword setting is added in KeywordOptions and both dialogs
 pick it up.
 """
-from PySide6.QtWidgets import QComboBox, QFormLayout, QPlainTextEdit
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QPlainTextEdit
 
 from qualitative_themes.analysis.settings import DEFAULT_NAMING_MODEL, parse_ignored_words
 
-WORDS_AND_PHRASES, WORDS_ONLY = 0, 1
-
-
 class KeywordOptions:
-    """Words to ignore and keyword phrases, added as rows to a form.
+    """Words to ignore and two-word keywords, added as rows to a form.
 
     Pre: `settings` is the AnalysisSettings to start from.
     Post: values() returns the matching AnalysisSettings fields; it raises
@@ -27,16 +24,15 @@ class KeywordOptions:
         self.ignored.setPlainText(", ".join(settings.ignored_words))
         if tooltips:
             self.ignored.setPlaceholderText("Words separated by commas, spaces, or newlines; added to English stop words")
-            self.ignored.setToolTip("Ignored words affect extracted keywords; passage embeddings still use the complete text.")
+            self.ignored.setToolTip("These words won't appear in theme keywords. Themes are still found from the full text.")
         form.addRow("Words to ignore", self.ignored)
-        self.phrases = QComboBox()
-        self.phrases.addItems(["Words and two-word phrases", "Words only"])
-        self.phrases.setCurrentIndex(WORDS_ONLY if settings.ngram_range == (1, 1) else WORDS_AND_PHRASES)
-        form.addRow("Keyword phrases", self.phrases)
+        self.phrases = QCheckBox('Allow two-word keywords (e.g. "health insurance")')
+        self.phrases.setChecked(settings.ngram_range != (1, 1))
+        form.addRow(self.phrases)
 
     def changed_signals(self):
         """Signals that fire when any of these controls changes (for re-validating)."""
-        return [self.ignored.textChanged, self.phrases.currentIndexChanged]
+        return [self.ignored.textChanged, self.phrases.toggled]
 
     def set_enabled(self, enabled: bool):
         self.ignored.setEnabled(enabled)
@@ -44,11 +40,11 @@ class KeywordOptions:
 
     def reset(self):
         self.ignored.clear()
-        self.phrases.setCurrentIndex(WORDS_AND_PHRASES)
+        self.phrases.setChecked(True)
 
     def values(self) -> dict:
         return {"ignored_words": parse_ignored_words(self.ignored.toPlainText()),
-                "ngram_range": (1, 1) if self.phrases.currentIndex() == WORDS_ONLY else (1, 2)}
+                "ngram_range": (1, 2) if self.phrases.isChecked() else (1, 1)}
 
 
 def naming_model_choice(models, initial, *, fallback_label, unverified_suffix=""):

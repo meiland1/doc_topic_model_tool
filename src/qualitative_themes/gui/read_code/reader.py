@@ -17,6 +17,7 @@ from qualitative_themes.gui.viewer_parts import (FindBar, LayerHighlighter, Mark
                                                  fill_color, theme_color)
 
 from qualitative_themes.gui.read_code.viewer import SourceViewer
+from qualitative_themes.analysis.topics import UNGROUPED_LABEL
 
 
 class ReaderMixin:
@@ -41,15 +42,15 @@ class ReaderMixin:
         self.next_passage = QPushButton("Next →")
         self.next_passage.clicked.connect(lambda: self.step(1))
         view_bar.addWidget(self.next_passage)
-        self.search_button = QPushButton("Search all")
+        self.search_button = QPushButton("Search all documents")
         self.search_button.setToolTip("Search every document (Ctrl+Shift+F)")
         self.search_button.clicked.connect(self.search_requested)
         view_bar.addWidget(self.search_button)
-        self.find_button = QPushButton("Find")
+        self.find_button = QPushButton("Find in document")
         self.find_button.setToolTip("Find in this document (Ctrl+F)")
         self.find_button.clicked.connect(self.open_find)
         view_bar.addWidget(self.find_button)
-        self.other_themes_toggle = QPushButton("Other themes")
+        self.other_themes_toggle = QPushButton("Show other themes faintly")
         self.other_themes_toggle.setCheckable(True)
         self.other_themes_toggle.setChecked(True)
         self.other_themes_toggle.setToolTip("Show other themes' colours faintly behind the selected theme")
@@ -102,7 +103,7 @@ class ReaderMixin:
         self.find_index = -1
         self.undo_stack = QUndoStack(self)
         center_lay.addWidget(self.evidence_views, 1)
-        add = QPushButton("Add selected text to chosen theme")
+        add = QPushButton("Code selection")
         self.add_selection_button = add
         self.view_mode.currentIndexChanged.connect(lambda index: add.setEnabled(index == 0))
         add.clicked.connect(self.add_selection)
@@ -132,11 +133,11 @@ class ReaderMixin:
         self.range_themes = QLabel("Select a coded passage to see its themes.")
         self.range_themes.setWordWrap(True)
         center_lay.addWidget(self.range_themes)
-        accept = QPushButton("Accept selected suggestion")
+        accept = QPushButton("Keep this suggestion")
         accept.clicked.connect(self.accept_selected_suggestion)
         coding_actions = QHBoxLayout()
         coding_actions.addWidget(accept)
-        remove = QPushButton("Remove selected coding")
+        remove = QPushButton("Uncode selection")
         remove.clicked.connect(self.remove_selected_coding)
         coding_actions.addWidget(remove)
         center_lay.addLayout(coding_actions)
@@ -248,7 +249,7 @@ class ReaderMixin:
         ranges, markers = [], []
         total = max(1, self.viewer.document().characterCount())
         for (theme_id, doc), rows in self._navigation_groups.items():
-            if doc != self.doc_id or theme_id not in colours or labels.get(theme_id) == "Uncategorized":
+            if doc != self.doc_id or theme_id not in colours or labels.get(theme_id) == UNGROUPED_LABEL:
                 continue
             index = colours[theme_id]
             selected = theme_id == current
@@ -396,7 +397,7 @@ class ReaderMixin:
         self.viewer.ensureCursorVisible()
         self.highlight_matches()
         origin = assignment_origin(self.directory, _id)
-        self.range_themes.setText(("Model suggestion" if origin == "model" else "Researcher coding") +
+        self.range_themes.setText(("Suggested by the tool" if origin == "model" else "Your coding") +
                                  "\nThemes: " + ", ".join(self.range_theme_labels(doc_id, start, end)))
         self.reload_notes()
         self.sync_tree_selection()
