@@ -22,8 +22,10 @@ and Vulkan libraries. The Windows zip is ~1.9 GB, mostly ``lib/ollama/cuda_v12``
 Machines whose NVIDIA driver is too old for CUDA 13 fall back to Vulkan or CPU.
 
 The pinned Ollama version is ``OLLAMA_VERSION`` below (override with the
-``OLLAMA_VERSION`` environment variable). Check asset names on
-https://github.com/ollama/ollama/releases when you change it.
+``OLLAMA_VERSION`` environment variable). Release file names have changed over
+time (Linux moved from .tgz to .tar.zst), so ENGINE_ASSETS lists the names to try
+in order; check https://github.com/ollama/ollama/releases when you change the pin.
+A .tar.zst download needs the ``zstandard`` package (pip install zstandard).
 """
 from __future__ import annotations
 
@@ -41,7 +43,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RESOURCES = ROOT / "resources"
-OLLAMA_VERSION = os.environ.get("OLLAMA_VERSION", "0.12.11")
+OLLAMA_VERSION = os.environ.get("OLLAMA_VERSION", "0.40.16")
 RELEASES = f"https://github.com/ollama/ollama/releases/download/v{OLLAMA_VERSION}"
 
 
@@ -103,6 +105,47 @@ def download(url: str) -> bytes:
 GPU_DROP = {"standard": ("cuda_v12",), "all": (), "cpu": ("cuda_v12", "cuda_v13", "vulkan", "rocm")}
 
 
+# Release files to try for each OS, newest naming first.
+ENGINE_ASSETS = {
+    "Windows": ["ollama-windows-amd64.zip"],
+    "Darwin": ["ollama-darwin.tgz", "ollama-darwin.tar.zst"],
+    "Linux": ["ollama-linux-amd64.tar.zst", "ollama-linux-amd64.tgz"],
+}
+
+
+def download_first(names):
+    """Download the first of `names` that exists in the pinned release. Returns (name, bytes)."""
+    import urllib.error
+    for name in names:
+        try:
+            return name, download(f"{RELEASES}/{name}")
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            print(f"  {name} isn't in Ollama {OLLAMA_VERSION}; trying the next name")
+    raise SystemExit(f"None of {', '.join(names)} is in Ollama {OLLAMA_VERSION}. Check the file names on "
+                     f"https://github.com/ollama/ollama/releases/tag/v{OLLAMA_VERSION} and update ENGINE_ASSETS.")
+
+
+def extract(name: str, data: bytes, target: Path):
+    """Unpack a .zip, .tgz or .tar.zst download into `target`."""
+    if name.endswith(".zip"):
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            archive.extractall(target)
+        return
+    if name.endswith(".zst"):
+        try:
+            import zstandard
+        except ImportError:
+            raise SystemExit(f"{name} is zstd-compressed: run `pip install zstandard`, then try again.")
+        data = zstandard.ZstdDecompressor().stream_reader(io.BytesIO(data)).read()
+        mode = "r:"
+    else:
+        mode = "r:gz"
+    with tarfile.open(fileobj=io.BytesIO(data), mode=mode) as archive:
+        archive.extractall(target, filter="data")
+
+
 def prune_gpu_libraries(target: Path, variant: str):
     """Delete the GPU library folders that `variant` drops (see GPU_DROP). No-op on macOS."""
     library = next((p for p in [target / "lib" / "ollama"] if p.is_dir()), None)
@@ -127,15 +170,18 @@ def fetch_engine(gpu: str = "standard"):
         shutil.rmtree(target)
     target.mkdir(parents=True)
     system = platform.system()
+    name, data = download_first(ENGINE_ASSETS.get(system, ENGINE_ASSETS["Linux"]))
+    extract(name, data, target)
+    del data
     if system == "Windows":
-        data = download(f"{RELEASES}/ollama-windows-amd64.zip")
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            archive.extractall(target)
+        if not (target / "ollama.exe").is_file():
+            found = next((p for p in target.rglob("ollama.exe") if p.is_file()), None)
+            if found is None:
+                raise SystemExit("Could not find ollama.exe in the Windows download.")
+            raise SystemExit(f"ollama.exe is at {found.relative_to(target)} in this release, not at the top. "
+                             "Update fetch_engine to move it (and its lib folder) up.")
     elif system == "Darwin":
         # The standalone CLI tarball contains the ollama binary and its libraries.
-        data = download(f"{RELEASES}/ollama-darwin.tgz")
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
-            archive.extractall(target, filter="data")
         binary = target / "ollama"
         if not binary.is_file():
             # rglob also matches folders (lib/ollama), so only accept a file.
@@ -145,9 +191,6 @@ def fetch_engine(gpu: str = "standard"):
             shutil.move(str(nested), binary)
         binary.chmod(0o755)
     else:
-        data = download(f"{RELEASES}/ollama-linux-amd64.tgz")
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
-            archive.extractall(target, filter="data")
         # The tarball has bin/ollama (the program) and lib/ollama/ (its libraries).
         # Copy the program next to lib/ so it finds lib/ollama the same way on every OS.
         found = target / "bin" / "ollama"

@@ -38,8 +38,8 @@ MAC
 From now on the app opens normally.
 
 Optional: to add the theme-naming model, keep all its parts (.tmtpack.001,
-.002, .003) together in Downloads, open the app and click "Add naming model…"
-on the start screen, then choose the .tmtpack.001 file.
+.002, .003) together in Downloads, open the app, tick "Setup details" on the
+start screen, click "Add theme-naming model…" and choose the .tmtpack.001 file.
 
 
 CHECKING THE DOWNLOAD (for IT staff)

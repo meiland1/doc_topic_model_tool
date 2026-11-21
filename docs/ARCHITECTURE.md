@@ -36,16 +36,26 @@ scripts/          fetch bundled resources, build model packs
 tests/            pytest; runs headless (QT_QPA_PLATFORM=offscreen)
 ```
 
-The one rule I try to keep: **only `gui/` imports Qt.** `storage/`, `analysis/`, `export/` and `runtime/` are plain Python. That's what lets most tests run without a window, and it's why every slow operation takes `progress` and `should_cancel` callbacks instead of touching widgets.
+The one rule I try to keep: **only `gui/` (and the GUI start-up in `app.py`) imports Qt.** `storage/`, `analysis/`, `export/` and `runtime/` are plain Python. That's what lets most tests run without a window, and it's why every slow operation takes `progress` and `should_cancel` callbacks instead of touching widgets.
 
-Roughly, the dependencies go:
+What imports what, worked out from the `import` lines for 0.3.0 (a package importing itself isn't shown):
 
 ```
-gui  ->  analysis, export, runtime  ->  storage  ->  domain
-                      \-> importers
+app        -> gui, analysis, runtime
+gui        -> analysis, export, storage, runtime, domain
+analysis   -> storage, runtime, export
+export     -> analysis, storage
+storage    -> domain, importers, analysis, runtime
+importers, domain, runtime -> nothing else in the app
 ```
 
-`analysis` does import `storage` (it saves runs), and a few `storage` modules borrow from `analysis` (settings defaults in `preferences.py` and `provenance.py`). Neither ever imports `gui`.
+So it isn't a clean stack. The places where it loops back are small and on purpose:
+
+- `storage` borrows constants and settings from `analysis` (`UNIT_LABELS` in `history.py`, the settings defaults in `preferences.py`, method names in `provenance.py`), and `practice.py` asks `runtime.paths` where the app data folder is.
+- `analysis` uses `runtime` for resource paths and the engine's address (`encoder.py`, `token_budget.py`, `labels.py`), and `visualizations.py` reads its data through `export.research.build_export()`.
+- `export` uses `analysis` for the overview and reading queue (reading guide), `settings_report()` (About this export) and `AnalysisCancelled`.
+
+None of them imports `gui`. If you add an import that goes the other way round one of these loops, check it doesn't run at import time in both directions.
 
 ## Ideas that everything else depends on
 
@@ -114,6 +124,18 @@ With about 30 passages or fewer (`SMALL_COLLECTION`), or when a theme may be a s
 
 Theme naming runs after the analysis is already saved, so naming failing or being cancelled never loses the analysis. Naming only overwrites `generated_label` on model-created themes. Anything the researcher renamed or merged into is left alone, and that check happens again inside the final write.
 
+### Theme naming and the engine
+
+`runtime/engine.py` runs the bundled Ollama on 127.0.0.1:11500, not the usual 11434, so it never collides with an Ollama the researcher installed themselves. From source without a bundled engine, `current_base_url()` falls back to that ordinary local Ollama.
+
+Ollama starts a separate "runner" process for each loaded model (`ollama runner` in old versions, `llama-server` from `lib/ollama` in newer ones), and on Windows those didn't end with the server. A crash or a stopped terminal could leave several behind, each holding 5–7 GB, until naming failed with out-of-memory errors. So:
+
+- `engine_processes()` lists every process whose executable is inside the app's own engine folder (PowerShell `Get-CimInstance` on Windows, `ps` elsewhere). Nothing outside that folder is ever touched.
+- `LocalEngine.start()` calls `clear_leftovers()` first. If the port already answers, the server is kept and only runners with no living parent are ended; otherwise everything from the folder goes.
+- `stop()` ends the server's whole process tree (`taskkill /T` on Windows) and then clears anything left.
+
+`analysis/labels.py` sends one request per theme. After naming it asks Ollama to unload the model straight away (`keep_alive: 0`) instead of keeping it for 5 minutes. Errors come back as `OllamaError` with Ollama's own reason. A runner crash while loading onto the graphics card retries that theme on the processor and keeps using the processor for the rest; an out-of-memory error stops naming with one plain message; two server errors in a row stop it too, and the remaining themes keep keyword names. `naming_outcome()` reads what happened back from the saved attempts for the status line.
+
 ### Coding in the workspace
 
 The researcher selects text, then presses a number key, clicks the floating Code as bar or uses Edit → Code selection. `code_selection_as()` (in `gui/read_code/coding_actions.py`) converts the selection to canonical offsets and pushes an `AddCodingCommand` (Ctrl+Z undoes it), which calls `storage.coding.add_coding()`. Then `reload_themes()` redraws from the database. The workspace never keeps its own copy of research decisions, so anything that changes the data just reloads.
@@ -151,7 +173,7 @@ SQLite connections are short-lived (`storage.database.connect()` opens, commits 
 
 ## The database
 
-One SQLite file per project, `project.sqlite`. The schema version is in `PRAGMA user_version`, currently 3. `storage/migrations.py` creates the whole schema in one step; there are no upgrade steps.
+One SQLite file per project, `project.sqlite`. The schema version is in `PRAGMA user_version`, currently 4. `storage/migrations.py` creates the whole schema in one step for a new project; the only upgrade step is 3 → 4 (below).
 
 | Table | What it holds |
 |---|---|
@@ -168,7 +190,7 @@ One SQLite file per project, `project.sqlite`. The schema version is in `PRAGMA 
 | `history_events` | audit log, plus a couple of saved preferences |
 | `documents_fts` | full-text index for search (only if SQLite has FTS5) |
 
-The schema is version 4. Projects from the 0.2 test versions (versions 1 and 2) were only ever test projects, so 0.3 doesn't convert them: `migrate()` raises `OLD_PROJECT_MESSAGE` and leaves the file alone, and restore refuses their backups the same way. Version 3 (the first 0.3 builds) is upgraded in place by `_upgrade_3_to_4()`, which rebuilds `comments` with scopes and turns the old memos (`notes`) into comments. To change the schema: edit `SCHEMA`, bump `SCHEMA_VERSION`, and decide then whether real projects exist that need an upgrade step (`OLDEST_UPGRADABLE` says which versions restore accepts).
+Projects from the 0.2 test versions (versions 1 and 2) were only ever test projects, so 0.3 doesn't convert them: `migrate()` raises `OLD_PROJECT_MESSAGE` and leaves the file alone, and restore refuses their backups the same way. Version 3 (the first 0.3 builds) is upgraded in place by `_upgrade_3_to_4()`, which rebuilds `comments` with scopes and turns the old memos (`notes`) into comments. To change the schema: edit `SCHEMA`, bump `SCHEMA_VERSION`, and decide then whether real projects exist that need an upgrade step (`OLDEST_UPGRADABLE` says which versions restore accepts).
 
 ## Common changes
 

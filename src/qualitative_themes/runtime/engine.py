@@ -53,7 +53,11 @@ def engine_responds(base_url: str, timeout: float = 2.0) -> bool:
 
 @dataclass(frozen=True)
 class EngineProcess:
-    """A running process started from the bundled engine binary."""
+    """A running process from the bundled engine's folder: the server, or a model runner.
+
+    Older Ollama runs models as `ollama runner …`; newer versions start a
+    `llama-server` from the engine's lib folder. Both count.
+    """
     pid: int
     parent: int
     command: str
@@ -69,12 +73,14 @@ def _hidden():
 
 
 def engine_processes(binary: Path) -> list[EngineProcess]:
-    """Processes running from `binary` (the server and its runners). Empty if they can't be listed."""
+    """Processes running from `binary`'s folder (the server and its runners). Empty if they can't be listed."""
+    folder = str(binary.parent)
     try:
         if sys.platform == "win32":
-            path = str(binary).replace("'", "''")
-            script = (f"Get-CimInstance Win32_Process -Filter \"Name='{binary.name}'\" | "
-                      f"Where-Object {{ $_.ExecutablePath -eq '{path}' }} | "
+            path = folder.replace("'", "''").rstrip("\\") + "\\"
+            script = ("Get-CimInstance Win32_Process | "
+                      f"Where-Object {{ $_.ExecutablePath -and $_.ExecutablePath.StartsWith('{path}', "
+                      "[StringComparison]::OrdinalIgnoreCase) } | "
                       "ForEach-Object { \"$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.CommandLine)\" }")
             output = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
                                     capture_output=True, text=True, timeout=20, creationflags=_hidden()).stdout
@@ -83,7 +89,7 @@ def engine_processes(binary: Path) -> list[EngineProcess]:
             output = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], capture_output=True, text=True,
                                     timeout=20).stdout
             rows = [line.split(None, 2) for line in output.splitlines()]
-            rows = [row for row in rows if len(row) == 3 and row[2].split()[0] == str(binary)]
+            rows = [row for row in rows if len(row) == 3 and row[2].split()[0].startswith(folder + os.sep)]
         return [EngineProcess(int(pid), int(parent), command) for pid, parent, command in
                 (row + [""] * (3 - len(row)) for row in rows)]
     except (OSError, ValueError, subprocess.SubprocessError):

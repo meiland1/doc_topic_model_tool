@@ -1,5 +1,8 @@
 """Saved titles and readable, paged history preserve existing analysis data."""
+from datetime import datetime
 import json
+import os
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -77,5 +80,21 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(history_runs(self.directory, 1, 1)[0], [])
 
     def test_legacy_automatic_title(self):
-        title = analysis_title(json.dumps({'analysis_unit': 'Paragraphs'}), '2026-10-01T12:30:40+00:00')
-        self.assertEqual(title, 'Analysis 2026-10-01 12:30:40 · Split by paragraph')
+        stamp = '2026-10-01T12:30:40+00:00'
+        local = datetime.fromisoformat(stamp).astimezone().strftime('%Y-%m-%d %H:%M:%S')
+        title = analysis_title(json.dumps({'analysis_unit': 'Paragraphs'}), stamp)
+        self.assertEqual(title, f'Analysis {local} · Split by paragraph')
+
+    @unittest.skipUnless(hasattr(time, 'tzset'), 'needs time.tzset')
+    def test_automatic_title_uses_local_time(self):
+        old = os.environ.get('TZ')
+        os.environ['TZ'] = 'America/Denver'; time.tzset()
+        try:
+            title = analysis_title({'analysis_unit': 'Paragraphs'}, '2026-11-21T18:17:35+00:00')
+        finally:
+            if old is None:
+                os.environ.pop('TZ', None)
+            else:
+                os.environ['TZ'] = old
+            time.tzset()
+        self.assertTrue(title.startswith('Analysis 2026-11-21 11:17:35'))

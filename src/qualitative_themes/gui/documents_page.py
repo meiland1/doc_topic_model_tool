@@ -88,6 +88,7 @@ class DocumentsPageMixin:
         self.import_log = QListWidget()
         self.import_log.setMaximumHeight(105)
         self.import_log.setAccessibleName("Document import results")
+        self.import_log.hide()  # shown once there's something to report
         tab_layout.addWidget(self.import_log)
         bottom = QHBoxLayout()
         bottom.addWidget(QLabel("Themes are found across all selected documents together."))
@@ -228,6 +229,7 @@ class DocumentsPageMixin:
             details += " " + " ".join(outcome.warnings)
         self.import_status.setText(details)
         self.import_log.addItem(details)
+        self.import_log.show()
         if outcome.status in {"imported", "restored"}:
             self.refresh_documents(outcome.document_id)
             self.workspace.reload_documents()

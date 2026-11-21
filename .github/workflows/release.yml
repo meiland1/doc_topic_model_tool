@@ -91,6 +91,8 @@ jobs:
       - name: Free runner disk space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h .
       # The model files are the same on every OS, so one pack serves Windows and Mac.
+      # Newer Ollama Linux builds are .tar.zst, which Python unpacks with zstandard.
+      - run: pip install zstandard
       - run: python scripts/fetch_resources.py --skip-model
       - run: curl -fsSL "$NAMING_LICENSE_URL" -o llama-license.txt
       - run: >
