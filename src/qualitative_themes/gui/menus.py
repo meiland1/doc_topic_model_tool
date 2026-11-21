@@ -54,7 +54,7 @@ def build_menus(window):
     add(export_menu, strings.EXPORT_PASSAGES, lambda: window.start_research_export("passages"), needs_project=True)
     add(export_menu, strings.EXPORT_READING_GUIDE, window.overview.export_guide, needs_project=True)
     file_menu.addSeparator()
-    add(file_menu, strings.CLOSE_PROJECT, window.show_hub, needs_project=True)
+    add(file_menu, strings.CLOSE_PROJECT, window.close_project, needs_project=True)
     # Quit keeps the system shortcut only on a Mac (Cmd+Q); elsewhere Ctrl+Q codes a selection.
     add(file_menu, "Quit", window.close, QKeySequence.StandardKey.Quit if sys.platform == "darwin" else None)
 

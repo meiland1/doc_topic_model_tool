@@ -13,7 +13,7 @@ from qualitative_themes.storage.documents import import_document
 from qualitative_themes.gui.analysis_setup import AnalysisSetupDialog
 from qualitative_themes.gui.main_window import MainWindow
 from qualitative_themes.storage.database import open_project
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, Qt, QTimer
 from PySide6.QtWidgets import QDialogButtonBox
 
 
@@ -219,7 +219,8 @@ def test_remove_restore_controls_and_saved_workspace_evidence(generated_workspac
     window = MainWindow()
     try:
         window._show_project(open_project(directory))
-        window.document_list.setCurrentRow(0, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        window.set_all_checked(False)
+        window.document_list.item(0).setCheckState(Qt.CheckState.Checked)
         monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.No)
         window.remove_selected_documents()
         assert window.document_list.count() == 2
@@ -246,8 +247,7 @@ def test_removing_all_documents_leaves_adding_available(generated_workspace, mon
     window = MainWindow()
     try:
         window._show_project(open_project(directory))
-        for row in range(window.document_list.count()):
-            window.document_list.item(row).setSelected(True)
+        window.set_all_checked(True)
         monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
         window.remove_selected_documents()
         assert not window.document_list.count()

@@ -117,3 +117,7 @@ QLineEdit#searchField { font-size: 12pt; padding: 9px 10px; }
 QPlainTextEdit#sourceViewer { selection-background-color: #1f3b57; selection-color: #ffffff; }
 QPushButton#linkButton { background: transparent; border: none; color: #0f766e; padding: 0 4px; min-height: 14px; font-size: 8.5pt; }
 QPushButton#linkButton:hover { text-decoration: underline; }
+QFrame#backCard { background: #f2faf9; border: 2px solid #0f766e; border-radius: 10px; }
+QWidget#titleBar { background: #ffffff; border-bottom: 1px solid #cbd7df; }
+QToolButton#projectSwitcher { border: 1px solid #cbd7df; border-radius: 8px; padding: 5px 12px; background: #ffffff; }
+QToolButton#projectSwitcher::menu-indicator { image: none; }
